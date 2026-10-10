@@ -1,0 +1,10 @@
+# Archivos guardados en los nodos locales
+storage/
+*.sqlite
+
+# Python
+__pycache__/
+*.pyc
+.env
+venv/
+.venv/
