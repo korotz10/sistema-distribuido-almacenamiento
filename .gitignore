@@ -1,5 +1,6 @@
 # Archivos guardados en los nodos locales
-storage/
+storage/*
+!storage/.gitkeep
 *.sqlite
 
 # Python
