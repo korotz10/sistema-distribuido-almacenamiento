@@ -1,1 +1,4 @@
-"""Nodo de almacenamiento (trabajador) del Mini Drive Distribuido."""
+"""
+Nodo de Almacenamiento (Trabajador)
+Sistema Distribuido Mini Drive
+"""

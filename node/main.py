@@ -1,28 +1,43 @@
-"""Punto de entrada del Nodo de Almacenamiento.
+"""
+Punto de entrada para ejecutar el Nodo de Almacenamiento.
 
-Ejemplos (desde la raíz del proyecto):
-    NODE_ID=node1 NODE_PORT=8001 python -m node.main
-    NODE_ID=node1 uvicorn node.main:app --host 0.0.0.0 --port 8001
+Ejemplos de ejecución en terminal:
+  - Linux/Mac:
+      NODE_ID=node1 NODE_PORT=8001 python -m node.main
+
+  - Windows (PowerShell):
+      $env:NODE_ID="node1"; $env:NODE_PORT="8001"; python -m node.main
 """
 import os
-
 import uvicorn
 from fastapi import FastAPI
+from node.router import NODE_ID, NODE_PORT, STORAGE_DIR, router
 
-from node.router import NODE_ID, STORAGE_DIR, router
+# Inicializar aplicación FastAPI
+app = FastAPI(
+    title=f"Mini Drive - Nodo {NODE_ID}",
+    description="Nodo de almacenamiento distribuido (Trabajador)",
+    version="1.0.0",
+)
 
-app = FastAPI(title=f"Mini Drive - Nodo {NODE_ID}")
+# Incluir los endpoints del router (/health, /store, /retrieve)
 app.include_router(router)
 
 
-@app.get("/")
+@app.get("/", tags=["Información"])
 async def root():
-    return {"node_id": NODE_ID, "storage": str(STORAGE_DIR)}
+    """Endpoint informativo de bienvenida al nodo."""
+    return {
+        "service": "Mini Drive - Nodo de Almacenamiento",
+        "node_id": NODE_ID,
+        "port": NODE_PORT,
+        "storage_directory": str(STORAGE_DIR),
+        "status": "online",
+    }
 
 
 if __name__ == "__main__":
-    uvicorn.run(
-        "node.main:app",
-        host=os.getenv("NODE_HOST", "0.0.0.0"),
-        port=int(os.getenv("NODE_PORT", "8001")),
-    )
+    host = os.getenv("NODE_HOST", "0.0.0.0")
+    port = int(os.getenv("NODE_PORT", "8001"))
+    print(f"🚀 Iniciando Nodo '{NODE_ID}' en {host}:{port}...")
+    uvicorn.run("node.main:app", host=host, port=port, reload=False)
