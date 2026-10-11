@@ -1,0 +1,1 @@
+"""Nodo de almacenamiento (trabajador) del Mini Drive Distribuido."""
