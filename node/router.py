@@ -11,6 +11,9 @@ from uuid import uuid4
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
+# Importamos los modelos Pydantic centralizados
+from common.schemas import HealthResponse, StoreResponse
+
 # 1. Configuración del Nodo desde variables de entorno
 NODE_ID = os.getenv("NODE_ID", "node1")
 NODE_PORT = int(os.getenv("NODE_PORT", "8001"))
@@ -20,7 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", BASE_DIR / "storage")).resolve()
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Tamaño de bloque para lectura fluida en RAM (1 MB)
+# Tamaño de bloque para lectura en RAM (1 MB)
 CHUNK_SIZE = 1024 * 1024
 
 router = APIRouter()
@@ -45,7 +48,7 @@ def safe_path(filename: str) -> Path:
     return destination_path
 
 
-@router.get("/health", tags=["Monitoreo"])
+@router.get("/health", response_model=HealthResponse, tags=["Monitoreo"])
 async def health():
     """
     Endpoint de diagnóstico usado por el Coordinador para verificar si el nodo está vivo.
@@ -58,16 +61,19 @@ async def health():
     }
 
 
-@router.post("/store", status_code=201, tags=["Almacenamiento"])
+@router.post("/store", status_code=201, response_model=StoreResponse, tags=["Almacenamiento"])
 async def store(
     file: UploadFile = File(...),
     filename: Optional[str] = Form(None),
 ):
     """
-    Recibe los bytes de un archivo enviando por el Coordinador y los guarda en ./storage/
+    Recibe los bytes de un archivo enviado por el Coordinador y los guarda en ./storage/
     Utiliza escritura atómica con archivo temporal (.tmp).
     """
     target_name = filename or file.filename
+    if not target_name:
+        raise HTTPException(status_code=400, detail="El archivo no tiene un nombre válido")
+
     dest_path = safe_path(target_name)
     temp_path = dest_path.with_name(f".{dest_path.name}.{uuid4().hex}.tmp")
 
