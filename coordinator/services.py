@@ -1,7 +1,6 @@
-"""Comunicación autenticada con nodos y verificación de cada transferencia."""
+"""Comunicación con nodos y verificación de cada transferencia."""
 import asyncio
 import hashlib
-import os
 from pathlib import Path
 import tempfile
 from urllib.parse import quote
@@ -34,12 +33,9 @@ def get_nodes():
 
 
 def node_client(timeout=None):
-    key = os.getenv("NODE_API_KEY", "")
-    if len(key) < 32:
-        raise NodeError("Falta configurar NODE_API_KEY")
     return client_factory(
         timeout=timeout or httpx.Timeout(TIMEOUT_READ, connect=TIMEOUT_CONNECT),
-        headers={"Authorization": "Bearer " + key, "Accept-Encoding": "identity"},
+        headers={"Accept-Encoding": "identity"},
         trust_env=False,
     )
 

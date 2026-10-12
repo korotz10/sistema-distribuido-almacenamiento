@@ -5,9 +5,8 @@ from datetime import datetime, timezone
 import logging
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBearer
 import uvicorn
 
 from common.config import (
@@ -16,7 +15,7 @@ from common.config import (
 )
 from common.files import TemporaryFileResponse, finish_thread, spool_upload, validate_filename
 from common.schemas import FileListResponse, UploadResponse
-from common.security import AccessMiddleware, validate_key
+from common.limits import RequestLimitsMiddleware
 from coordinator.catalog import CatalogError, CatalogManager, UploadConflict
 from coordinator import services
 
@@ -79,8 +78,6 @@ def create_app(manager=None):
 
     @asynccontextmanager
     async def lifespan(app):
-        validate_key("CLIENT_API_KEY")
-        validate_key("NODE_API_KEY")
         services.get_nodes()
         await get_catalog()
         maintenance = asyncio.create_task(maintain())
@@ -92,11 +89,11 @@ def create_app(manager=None):
                 await maintenance
 
     app = FastAPI(title="Mini Drive Distribuido - Coordinador", version="2.0.0",
-                  lifespan=lifespan, dependencies=[Depends(HTTPBearer(auto_error=False))])
+                  lifespan=lifespan)
     app.state.catalog = manager
     app.state.catalog_lock = asyncio.Lock()
     app.state.audit_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TRANSFERS)
-    app.add_middleware(AccessMiddleware, key_variable="CLIENT_API_KEY", public_health=True)
+    app.add_middleware(RequestLimitsMiddleware)
 
     @app.exception_handler(UploadConflict)
     async def conflict_handler(request: Request, exc: UploadConflict):
