@@ -1,7 +1,3 @@
-Aquí tienes un **`README.md` completo, profesional y perfectamente estructurado** para la raíz del proyecto. Está diseñado siguiendo los estándares de software distribuido y listo para ser presentado al profesor y evaluadores.
-
----
-
 ```markdown
 # 📁 Mini Drive Distribuido
 
