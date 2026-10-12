@@ -37,6 +37,7 @@ class UploadResponse(BaseModel):
 
 class FileInfo(BaseModel):
     filename: str
+    storage_key: str
     size_bytes: int
     sha256: str
     primary_node: str

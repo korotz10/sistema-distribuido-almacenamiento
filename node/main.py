@@ -1,43 +1,37 @@
-"""
-Punto de entrada para ejecutar el Nodo de Almacenamiento.
-
-Ejemplos de ejecución en terminal:
-  - Linux/Mac:
-      NODE_ID=node1 NODE_PORT=8001 python -m node.main
-
-  - Windows (PowerShell):
-      $env:NODE_ID="node1"; $env:NODE_PORT="8001"; python -m node.main
-"""
+"""Servidor de almacenamiento. NODE_API_KEY es obligatorio."""
+from contextlib import asynccontextmanager
 import os
+from pathlib import Path
+
+from fastapi import Depends, FastAPI
+from fastapi.security import HTTPBearer
 import uvicorn
-from fastapi import FastAPI
-from node.router import NODE_ID, NODE_PORT, STORAGE_DIR, router
 
-# Inicializar aplicación FastAPI
-app = FastAPI(
-    title=f"Mini Drive - Nodo {NODE_ID}",
-    description="Nodo de almacenamiento distribuido (Trabajador)",
-    version="1.0.0",
-)
-
-# Incluir los endpoints del router (/health, /store, /retrieve)
-app.include_router(router)
+from common.security import AccessMiddleware, validate_key
+from node.router import NODE_ID, NODE_PORT, STORAGE_DIR, NodeStorage, create_router
 
 
-@app.get("/", tags=["Información"])
-async def root():
-    """Endpoint informativo de bienvenida al nodo."""
-    return {
-        "service": "Mini Drive - Nodo de Almacenamiento",
-        "node_id": NODE_ID,
-        "port": NODE_PORT,
-        "storage_directory": str(STORAGE_DIR),
-        "status": "online",
-    }
+def create_app(directory: Path = STORAGE_DIR, node_id: str = NODE_ID):
+    @asynccontextmanager
+    async def lifespan(app):
+        validate_key("NODE_API_KEY")
+        yield
 
+    app = FastAPI(title=f"Mini Drive - Nodo {node_id}", version="2.0.0",
+                  lifespan=lifespan, dependencies=[Depends(HTTPBearer(auto_error=False))])
+    storage = NodeStorage(directory, node_id)
+    app.state.storage = storage
+    app.include_router(create_router(storage))
+    app.add_middleware(AccessMiddleware, key_variable="NODE_API_KEY")
+
+    @app.get("/")
+    async def root():
+        return {"service": "Mini Drive - Nodo", "node_id": node_id, "status": "online"}
+
+    return app
+
+
+app = create_app()
 
 if __name__ == "__main__":
-    host = os.getenv("NODE_HOST", "0.0.0.0")
-    port = int(os.getenv("NODE_PORT", "8001"))
-    print(f"🚀 Iniciando Nodo '{NODE_ID}' en {host}:{port}...")
-    uvicorn.run("node.main:app", host=host, port=port, reload=False)
+    uvicorn.run("node.main:app", host=os.getenv("NODE_HOST", "0.0.0.0"), port=NODE_PORT, reload=False)

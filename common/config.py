@@ -34,3 +34,15 @@ DEFAULT_NODES = [
 # Tiempos de espera en segundos para peticiones HTTPX
 TIMEOUT_CONNECT = 3.0
 TIMEOUT_READ = 10.0
+
+# Límites por proceso y persistencia del coordinador.
+MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(100 * 1024 * 1024)))
+MAX_CONCURRENT_TRANSFERS = int(os.getenv("MAX_CONCURRENT_TRANSFERS", "4"))
+TRANSFER_TIMEOUT = float(os.getenv("TRANSFER_TIMEOUT", "120"))
+PENDING_TTL = max(float(os.getenv("PENDING_TTL", "600")), TRANSFER_TIMEOUT * 2)
+GARBAGE_GRACE = max(float(os.getenv("GARBAGE_GRACE", "300")), TRANSFER_TIMEOUT * 2)
+MAINTENANCE_INTERVAL = float(os.getenv("MAINTENANCE_INTERVAL", "30"))
+CATALOG_DB = Path(os.getenv("CATALOG_DB", str(BASE_DIR / "catalog.sqlite3")))
+
+if min(MAX_FILE_SIZE, MAX_CONCURRENT_TRANSFERS, TRANSFER_TIMEOUT, MAINTENANCE_INTERVAL) <= 0:
+    raise ValueError("Los límites y tiempos de espera deben ser positivos")
