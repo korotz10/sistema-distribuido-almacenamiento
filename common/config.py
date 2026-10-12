@@ -27,7 +27,7 @@ DEFAULT_NODES = [
     {
         "id": "node3",
         "name": "Nodo 3 (Victor)",
-        "url": os.getenv("NODE3_URL", "http://100.67.239.56:8003"),
+        "url": os.getenv("NODE3_URL", "http://100.98.240.121:8003"),
     },
 ]
 
