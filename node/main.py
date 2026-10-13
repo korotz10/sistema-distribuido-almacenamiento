@@ -1,24 +1,22 @@
-"""Servidor de almacenamiento configurable mediante NODE_ID y NODE_PORT."""
+"""Arranque de un nodo: python -m node.main."""
 import os
-from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 import uvicorn
 
-from common.limits import RequestLimitsMiddleware
-from node.router import NODE_ID, NODE_PORT, STORAGE_DIR, NodeStorage, create_router
+from common.config import NODE_ID, NODE_PORT, STORAGE_DIR
+from node.router import NodeStorage, create_router
 
 
-def create_app(directory: Path = STORAGE_DIR, node_id: str = NODE_ID):
-    app = FastAPI(title=f"Mini Drive - Nodo {node_id}", version="2.0.0")
-    storage = NodeStorage(directory, node_id)
-    app.state.storage = storage
-    app.include_router(create_router(storage))
-    app.add_middleware(RequestLimitsMiddleware)
+def create_app(directory=STORAGE_DIR, node_id=NODE_ID):
+    app = FastAPI(title=f"Mini Drive - {node_id}")
+    app.state.storage = NodeStorage(directory, node_id)
+    app.include_router(create_router(app.state.storage))
 
-    @app.get("/")
-    async def root():
-        return {"service": "Mini Drive - Nodo", "node_id": node_id, "status": "online"}
+    @app.exception_handler(OSError)
+    def storage_error(request: Request, exc: OSError):
+        return JSONResponse({"detail": "No se pudo acceder al almacenamiento del nodo"}, status_code=503)
 
     return app
 
@@ -26,4 +24,4 @@ def create_app(directory: Path = STORAGE_DIR, node_id: str = NODE_ID):
 app = create_app()
 
 if __name__ == "__main__":
-    uvicorn.run("node.main:app", host=os.getenv("NODE_HOST", "0.0.0.0"), port=NODE_PORT, reload=False)
+    uvicorn.run(app, host=os.getenv("NODE_HOST", "0.0.0.0"), port=NODE_PORT)

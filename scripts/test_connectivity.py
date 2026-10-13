@@ -1,11 +1,9 @@
-"""Sondeo independiente del coordinador y los nodos; salida 0 si todos responden."""
-import asyncio
+"""Consultar el coordinador y cada nodo. Salida 0 si todos responden, 1 si alguno falla."""
 import os
 from pathlib import Path
 import sys
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BASE_DIR))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import httpx
 
@@ -13,31 +11,26 @@ from common.config import COORDINATOR_PORT, TIMEOUT_CONNECT
 from coordinator.services import check_node_health, get_nodes
 
 
-async def test_coordinator():
+def main():
     base = os.getenv("COORDINATOR_URL", f"http://127.0.0.1:{COORDINATOR_PORT}").rstrip("/")
     try:
-        async with httpx.AsyncClient(timeout=TIMEOUT_CONNECT, trust_env=False) as client:
-            response = await client.get(base + "/health")
-            valid = response.status_code == 200 and response.json().get("service") == "coordinator"
-            print(f"Coordinador {base}: {'READY' if valid else 'ERROR HTTP ' + str(response.status_code)}")
-            return valid
+        with httpx.Client(timeout=TIMEOUT_CONNECT, trust_env=False) as client:
+            response = client.get(base + "/health")
+            data = response.json()
+            coordinator_ok = (response.status_code == 200 and isinstance(data, dict)
+                              and data.get("service") == "coordinator" and data.get("status") == "ok")
     except (httpx.HTTPError, ValueError):
-        print(f"Coordinador {base}: INACCESIBLE")
-        return False
-
-
-async def test_node(node):
-    ready, details = await check_node_health(node)
-    print(f"{node['id']} {node['url']}: {'READY' if ready else 'DOWN'} | {details}")
-    return ready
-
-
-async def main():
-    nodes = get_nodes()
-    results = await asyncio.gather(test_coordinator(), *(test_node(node) for node in nodes))
-    print(f"Nodos disponibles: {sum(results[1:])}/{len(nodes)}. La integridad se consulta en /integrity.")
-    return 0 if all(results) else 1
+        coordinator_ok = False
+    print(f"Coordinador {base}: {'UP' if coordinator_ok else 'DOWN'}")
+    results = []
+    for node in get_nodes():
+        ready, details = check_node_health(node)
+        results.append(ready)
+        print(f"{node['id']} {node['url']}: {'UP' if ready else 'DOWN'} | {details}")
+    print(f"Nodos disponibles: {sum(results)}/{len(results)}")
+    print("Esto comprueba HTTP. La evidencia de cuatro equipos distintos se documenta por separado.")
+    return 0 if coordinator_ok and all(results) else 1
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    sys.exit(main())

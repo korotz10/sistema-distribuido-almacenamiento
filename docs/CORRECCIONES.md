@@ -1,8 +1,12 @@
-**Correcciones del diagnóstico — 12 de octubre de 2026**
+# Correcciones del diagnóstico
+
+> Documento histórico de la implementación ampliada. SQLite, mantenimiento y reparación descritos aquí se retiraron al ajustar el primer laboratorio. Consulte [ALCANCE_LABORATORIO.md](ALCANCE_LABORATORIO.md) y el [README](../README.md) para la versión actual.
+
+Revisión del 12 de octubre de 2026, previa a recibir la guía del laboratorio. La limpieza de esa versión se registra en [LIMPIEZA.md](LIMPIEZA.md).
 
 Se corrigieron los fallos de consistencia y comportamiento reproducidos en el diagnóstico inicial. La implementación mantiene las actualizaciones por nombre y el modelo coordinador–nodos. Las nuevas garantías se apoyan en objetos inmutables, un catálogo SQLite transaccional y verificaciones de integridad.
 
-**Explicación de cada solución**
+## Explicación de cada solución
 
 | Error anterior | Solución implementada | Comportamiento resultante |
 | --- | --- | --- |
@@ -17,36 +21,36 @@ Se corrigieron los fallos de consistencia y comportamiento reproducidos en el di
 | La replicación se describía como simultánea pero era secuencial. | Las dos primeras transferencias se ejecutan en paralelo; los candidatos adicionales se prueban si hace falta. | Se conserva la confirmación síncrona de dos copias y se evita sumar innecesariamente las dos transferencias iniciales. |
 | Nombres con # y Unicode fallaban al descargar. | Las URL internas codifican el segmento con quote; FileResponse genera el encabezado de descarga UTF-8. Los objetos nuevos usan identificadores opacos. | Se verificaron nombres con #, %, espacios, acentos y emojis, y también nombres heredados del JSON. |
 | Los nombres inválidos aparecían como fallos de infraestructura. | La validación portable se ejecuta antes de reservar o contactar nodos y también en el nodo. | Rutas, controles, nombres reservados y caracteres incompatibles reciben 400. Tamaños excesivos reciben 413. |
-| Los nodos aceptaban lecturas, escrituras y borrados sin credenciales. | Un middleware comprueba la clave Bearer antes de procesar el cuerpo. CLIENT_API_KEY y NODE_API_KEY separan la API pública de la interna. | Las peticiones sin credenciales reciben 401. Si la clave no está configurada, el servicio falla de forma cerrada. |
+| La autenticación añadida impedía arrancar con los comandos habituales. | Se retiraron la validación de claves, las cabeceras Bearer y las dependencias de autenticación de OpenAPI, por decisión del alcance académico. Se mantienen los límites de recursos. | Coordinador y nodos arrancan y operan sin claves; Swagger no exige credenciales. |
 | READY/HEALTHY se confundía con archivos íntegros. | /status informa NODE_READINESS; /integrity comprueba realmente tamaño y hash de cada ubicación. | Un proceso activo puede aparecer READY y un archivo UNAVAILABLE. La distinción está en el contrato, sin presentar COMMITTED como disponibilidad actual. |
 | No había forma de restaurar redundancia desde la copia sana. | POST /repair/{filename} reserva el nombre, recupera una copia verificada y publica una nueva versión en dos nodos. | Una copia corrupta o ausente puede recuperarse. Si ambas se perdieron, devuelve 503 y conserva los metadatos. |
 | El script podía declarar caído al coordinador mientras esperaba sondeos. | GET /health comprueba solamente el coordinador y su catálogo. /status sondea nodos en paralelo. El script consulta los servicios por separado. | La caída de los nodos no provoca un falso diagnóstico de caída del coordinador. El script devuelve un código de salida útil. |
 | El coordinador cargaba los archivos completos en RAM. | Se usan temporales y bloques de 1 MiB para preparar subidas y verificar descargas. Se limitan tamaño, cuerpo HTTP, concurrencia y plazos. | El uso de memoria de transferencia queda acotado. Se requiere espacio temporal; la descarga comienza después de verificar el archivo completo. |
 | Varios nodos locales podían compartir por accidente el mismo disco lógico. | Cada directorio guarda una identidad de nodo y almacenamiento. Se rechaza abrirlo con otro NODE_ID y se validan las identidades remotas. | Cambiar únicamente el puerto ya no permite fingir independencia sobre el mismo directorio. |
 | Los temporales de un proceso muerto quedaban indefinidamente. | Cada temporal del nodo tiene un bloqueo entre procesos. Al reiniciar, el nodo elimina temporales cuyos bloqueos ya están libres. | Se limpian escrituras abandonadas sin borrar temporales de otro worker activo. |
-| La documentación prometía garantías inexistentes y mostraba configuración contradictoria. | Se reescribieron README.md y node/README.md con los contratos, configuración, migración, recuperación y límites actuales. | La configuración real se toma de variables de entorno y no se presentan IP de ejemplo como servicios activos. |
+| La documentación prometía garantías inexistentes y mostraba configuración contradictoria. | README.md centraliza arquitectura, instalación, API de coordinador y nodos, configuración, migración, pruebas y limitaciones. Se retiró el README duplicado del nodo. | Las instrucciones corresponden al código actual y distinguen la demostración local de la ejecución en varios equipos. |
 
-**Archivos y responsabilidades**
+## Archivos y responsabilidades
 
 - common/files.py: validación de nombres, lectura por bloques, bloqueos, respuesta temporal y espera segura de operaciones de hilo durante cancelaciones.
-- common/security.py: autenticación previa al multipart, límites del cuerpo y de transferencias concurrentes.
+- common/limits.py: límites del cuerpo, tiempo de lectura y transferencias concurrentes.
 - coordinator/catalog.py: catálogo, importación del JSON, reservas, publicación, cola de limpieza y respaldo.
-- coordinator/services.py: clientes autenticados, validación de identidades y confirmaciones, descarga verificada y limpieza.
+- coordinator/services.py: comunicación HTTP, validación de identidades y confirmaciones, descarga verificada y limpieza.
 - coordinator/main.py: API pública, replicación, failover, auditoría, reparación y tarea periódica de mantenimiento.
 - node/router.py: publicación inmutable, escrituras idempotentes, bloqueos y marcas de cancelación.
 - scripts/backup_catalog.py: respaldo consistente de SQLite sin copiar una base abierta de forma insegura.
 - scripts/test_connectivity.py: diagnóstico independiente de procesos.
 - tests/test_system.py y tests/smoke_http.py: regresiones y prueba HTTP con procesos reales.
 
-**Verificación realizada**
+## Verificación realizada
 
-La suite de regresión completó **41 pruebas**. Incluye sobrescrituras fallidas y exitosas, colisión concurrente, errores y pérdida de confirmaciones, recuperación tras timeout, corrupción con igual tamaño, caída de ambas copias, migración de archivos heredados, catálogo corrupto, reservas expiradas, respaldos, límites de cuerpos con y sin Content-Length, autenticación, nombres Unicode y limpieza de temporales.
+La suite de regresión completó **42 pruebas**. Incluye sobrescrituras fallidas y exitosas, colisión concurrente, errores y pérdida de confirmaciones, recuperación tras timeout, corrupción con igual tamaño, caída de ambas copias, migración de archivos heredados, catálogo corrupto, reservas expiradas, respaldos, límites de cuerpos con y sin Content-Length, arranque y operaciones sin claves, OpenAPI sin autenticación, nombres Unicode y limpieza de temporales.
 
 Se probó además la cancelación de una petición durante el commit: la transacción pudo terminar y los datos publicados permanecieron. La cancelación durante la replicación dejó los destinos registrados para limpieza.
 
-La prueba HTTP inició tres nodos y un coordinador Uvicorn sobre 127.0.0.1, en directorios temporales. Verificó una transferencia de más de 3 MiB, SHA-256, nombres Unicode con caracteres de URL, failover tras detener el principal, selección de otros dos nodos, persistencia después de reiniciar el coordinador, reparación y rechazo de acceso anónimo. Cerró los procesos al terminar.
+La prueba HTTP inicia tres nodos y un coordinador Uvicorn sobre 127.0.0.1, en directorios temporales, mediante `python -m node.main` y `python -m coordinator.main`. Verifica una transferencia de más de 3 MiB, SHA-256, nombres Unicode con caracteres de URL, failover tras detener el principal, selección de otros dos nodos, persistencia después de reiniciar el coordinador y reparación. No configura claves ni envía credenciales. En Windows cierra el árbol de cada proceso de prueba para incluir el intérprete que pueda crear el lanzador del entorno virtual.
 
-Las verificaciones usaron Python 3.12.14 en Windows y las dependencias fijadas en requirements.txt y requirements.lock. No se cambió la red Tailscale ni se desplegó esta versión en los otros computadores.
+La versión inicial se verificó con Python 3.12.14 en Windows y las dependencias fijadas en requirements.txt y requirements.lock. La revisión de limpieza se probó también con el entorno virtual existente de Windows y Python 3.14.2. En esta última versión, las dependencias actuales emiten avisos de deprecación y avisos de cierre de temporales multipart al interrumpir cuerpos inválidos; estos avisos no son fallos de las aserciones. No se actualizaron dependencias ni se desplegaron cambios en los otros computadores.
 
 Para repetir:
 
@@ -56,11 +60,11 @@ python -m unittest discover -s tests -v
 python tests/smoke_http.py
 ~~~
 
-**Actualización de una instalación existente**
+## Actualización de una instalación existente
 
 1. Detenga la versión anterior y haga una copia de catalog.json y los directorios de almacenamiento.
-2. Actualice coordinador y nodos juntos. La versión nueva exige autenticación y campos de identidad que los nodos anteriores no proporcionan.
-3. Configure CLIENT_API_KEY en el coordinador y la misma NODE_API_KEY en el coordinador y todos los nodos. Use valores distintos para los dos roles.
+2. Actualice coordinador y nodos juntos. La versión nueva verifica campos de identidad que los nodos originales no proporcionaban.
+3. Configure los identificadores, puertos y URL de los nodos. No se requieren claves de API.
 4. Mantenga STORAGE_DIR apuntando a los archivos existentes. No cambie la ubicación de los archivos heredados durante la migración.
 5. Inicie los nodos y después el coordinador. La primera inicialización crea catalog.sqlite3 e importa el JSON sin modificarlo.
 6. Consulte /status y /integrity. Use /repair/{filename} para archivos degradados que aún tengan una copia válida.
@@ -68,11 +72,10 @@ python tests/smoke_http.py
 
 El JSON anterior queda como referencia de migración y deja de actualizarse. Las copias huérfanas creadas por la versión antigua no se borran automáticamente: no existe un registro suficiente para atribuirlas con seguridad a operaciones fallidas. La nueva cola rastrea las operaciones de esta versión.
 
-**Límites que permanecen**
+## Límites que permanecen
 
 - El coordinador y su disco siguen siendo un punto único de disponibilidad. Los respaldos permiten recuperación; no proporcionan conmutación automática. Para eliminar ese límite hacen falta un catálogo replicado, coordinación de escritores y acceso del cliente a un coordinador disponible. No deben arrancarse coordinadores independientes con copias divergentes de SQLite.
 - La auditoría y reparación son operaciones explícitas. La limpieza de operaciones fallidas sí se reintenta en segundo plano.
 - Si desaparecen todas las copias válidas, el sistema detecta la pérdida pero no puede reconstruir los bytes.
 - Las versiones antiguas se eliminan después del margen configurado. Restaurar un catálogo histórico exige conservar también los objetos a los que apuntaba; un respaldo de metadatos no sustituye un respaldo completo.
-- Los secretos deben distribuirse entre los equipos y la exposición de red depende de Tailscale, el cortafuegos y las interfaces de escucha. Las pruebas locales no certifican esa configuración.
 - Las pruebas cubren fallos de procesos y comunicación; no simulan fallos del hardware, del sistema de archivos ni cortes de energía. La durabilidad física final depende del almacenamiento.

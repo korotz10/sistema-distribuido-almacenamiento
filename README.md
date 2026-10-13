@@ -1,143 +1,227 @@
-**Mini Drive Distribuido — versión 2**
+# Mini Drive Distribuido
 
-Servicio de almacenamiento con un coordinador FastAPI y tres nodos. Cada versión se confirma después de verificar dos copias independientes. El cliente usa nombres lógicos; los nodos guardan objetos con identificadores únicos.
+Primer laboratorio de Sistemas Distribuidos (IS893), Universidad Tecnológica de Pereira. Grupo de cuatro integrantes.
 
-El coordinador sigue siendo una dependencia central. Esta versión protege la consistencia y permite respaldar y recuperar el catálogo; la disponibilidad automática ante la pérdida del equipo coordinador requiere un despliegue adicional.
+El servicio permite **subir, listar y descargar archivos** desde un coordinador. Este reparte los archivos entre tres nodos, guarda dos copias y utiliza la réplica cuando falla la copia principal. El alcance está ajustado al *Taller Parcial – Laboratorio Sistemas Distribuidos, octubre de 2026*.
 
-**Instalación y ejecución**
+**La demostración evaluada debe ejecutarse en cuatro computadores independientes, con IP distintas.** Las pruebas en localhost incluidas aquí sirven para desarrollar y verificar el código; no sustituyen esa entrega.
 
-Entorno validado: Python 3.12. Desde la raíz del repositorio:
+## Arquitectura y distribución del trabajo
 
-~~~powershell
+```mermaid
+flowchart TD
+    Usuario["Usuario · una URL del servicio"] -->|HTTP| A["Host A · Coordinador<br/>IP: por confirmar · puerto 8000<br/>Catálogo y elección de nodos"]
+    A --> Catalogo[("catalog.json · metadatos")]
+    A <-->|HTTP| B["Host B · node1<br/>100.121.209.117:8001<br/>Guardar y recuperar archivos"]
+    A <-->|HTTP| C["Host C · node2<br/>100.90.207.18:8002<br/>Guardar y recuperar archivos"]
+    A <-->|HTTP| D["Host D · node3<br/>100.98.240.121:8003<br/>Guardar y recuperar archivos"]
+    B --> SB[("storage/ · disco B")]
+    C --> SC[("storage/ · disco C")]
+    D --> SD[("storage/ · disco D")]
+```
+
+Las IP de nodos proceden de la configuración existente de Tailscale; su conectividad debe comprobarse en los equipos. Complete la IP del coordinador y el inventario de [la demostración](docs/DEMOSTRACION.md) antes de entregar.
+
+| Componente | Responsabilidad |
+| --- | --- |
+| Coordinador | Recibir peticiones del cliente, elegir dos nodos, comprobar sus respuestas y registrar ubicaciones. |
+| Cada nodo | Guardar una copia en su disco y entregarla por HTTP cuando se solicita. |
+| Catálogo JSON | Relacionar nombre visible, identificador físico, tamaño, SHA-256 y ubicaciones. |
+| Cliente | Utilizar la URL del coordinador sin elegir el nodo físico. Swagger UI permite hacerlo desde el navegador. |
+
+## Decisiones del laboratorio
+
+- Python y FastAPI para las API; HTTPX para las solicitudes entre procesos.
+- HTTP/REST sobre LAN o Tailscale, permitido por la guía.
+- Selección por turnos (*round-robin*): con todos activos, los pares son `node1–node2`, `node2–node3` y `node3–node1`.
+- Dos copias antes de confirmar una subida; si un nodo falla, se intenta el siguiente.
+- Descarga desde el principal y, si falla o entrega contenido incorrecto, desde la réplica.
+- Catálogo JSON escrito mediante un temporal y sustitución al terminar, para evitar truncar el catálogo anterior.
+- Un proceso coordinador y un proceso por nodo. El coordinador procesa una subida a la vez mediante un bloqueo local.
+- Archivos de hasta 10 MiB por defecto. Las operaciones usan memoria; el límite mantiene sencilla la implementación.
+- Nombres repetidos: `409`. Para un archivo nuevo, utilice otro nombre; esta versión no administra actualizaciones ni versiones.
+- Sin autenticación, reparación de réplicas, auditorías periódicas ni tareas de mantenimiento.
+
+Estas decisiones de implementación no son exigencias adicionales del profesor. Su justificación y la correspondencia con cada requisito están en [ALCANCE_LABORATORIO.md](docs/ALCANCE_LABORATORIO.md).
+
+## Estructura
+
+```text
+common/
+  config.py                 Configuración por variables de entorno
+  files.py                  Validación, tamaño, hash y escritura con temporal
+  schemas.py                Respuestas documentadas de la API
+coordinator/
+  catalog.py                Catálogo JSON y turno de distribución
+  main.py                   Subir, listar, descargar y consultar estado
+  services.py               Solicitudes HTTP a los nodos
+node/
+  main.py                   Arranque del servidor del nodo
+  router.py                 Guardar y recuperar objetos del disco
+scripts/
+  test_connectivity.py      Consulta HTTP a coordinador y nodos
+  migrate_catalog.py        Exportación opcional del SQLite anterior a JSON
+tests/
+  test_system.py            Pruebas aisladas de funcionamiento
+  smoke_http.py             Cuatro procesos HTTP temporales
+docs/
+  ALCANCE_LABORATORIO.md     Análisis de la guía y simplificación
+  DEMOSTRACION.md            Inventario y guion de evidencias en cuatro hosts
+storage/                    Datos del nodo; excluidos de Git
+.env.example                Plantilla; no se carga automáticamente
+requirements.txt            Dependencias directas
+```
+
+Los paquetes `common`, `coordinator` y `node` incluyen `__init__.py`. Los documentos `DIAGNOSTICO.md`, `CORRECCIONES.md` y `LIMPIEZA.md` dentro de `docs/` se conservan como historial de las revisiones anteriores.
+
+## Instalación
+
+Python 3.12 es el entorno de referencia. La versión simplificada también se probó con Python 3.14.2 en Windows.
+
+En cada computador, desde la raíz del repositorio:
+
+```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-~~~
+```
 
-Configure dos secretos distintos, de al menos 32 caracteres. Para generar cada uno puede ejecutar:
+Si ya existe `venv`, active `.\venv\Scripts\Activate.ps1`. Hay un solo archivo de dependencias: fija las cuatro bibliotecas directas; sus dependencias indirectas las resuelve pip.
 
-~~~powershell
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-~~~
+## Ejecución en los cuatro equipos
 
-- CLIENT_API_KEY: permite usar la API del coordinador.
-- NODE_API_KEY: compartida entre el coordinador y los nodos para la comunicación interna.
-- Los procesos se niegan a arrancar si falta su clave requerida. No hay claves predeterminadas.
-- Las variables se leen del entorno. El archivo .env.example es una plantilla; no se carga automáticamente.
+En cada terminal, active el entorno virtual. Mantenga el mismo código en los cuatro equipos y configure las IP accesibles de los nodos en el coordinador.
 
-Ejemplo de coordinador:
+**Host B — node1:**
 
-~~~powershell
-$env:CLIENT_API_KEY="REEMPLAZAR_POR_LA_CLAVE_DEL_CLIENTE"
-$env:NODE_API_KEY="REEMPLAZAR_POR_LA_CLAVE_INTERNA"
-$env:NODE1_URL="http://IP_REAL_NODO_1:8001"
-$env:NODE2_URL="http://IP_REAL_NODO_2:8002"
-$env:NODE3_URL="http://IP_REAL_NODO_3:8003"
-python -m coordinator.main
-~~~
-
-Ejemplo de nodo:
-
-~~~powershell
-$env:NODE_API_KEY="REEMPLAZAR_POR_LA_MISMA_CLAVE_INTERNA"
+```powershell
 $env:NODE_ID="node1"
 $env:NODE_PORT="8001"
-$env:STORAGE_DIR="./storage/node1"
 python -m node.main
-~~~
+```
 
-Para node2 y node3, cambie identificador, puerto y directorio. En equipos distintos puede conservar el directorio predeterminado ./storage. Si ya tiene archivos de la versión anterior, mantenga la ruta original de STORAGE_DIR durante la migración. El nodo registra la identidad del directorio y rechaza que otro NODE_ID lo comparta.
+**Host C — node2:**
 
-Abra /docs en el coordinador y use **Authorize** para introducir CLIENT_API_KEY. En /docs de un nodo use NODE_API_KEY. No introduzca el prefijo Bearer en el cuadro de Swagger; la interfaz lo agrega. Las llamadas HTTP directas deben enviar la cabecera Authorization: Bearer seguida de la clave.
+```powershell
+$env:NODE_ID="node2"
+$env:NODE_PORT="8002"
+python -m node.main
+```
 
-Las direcciones incluidas en common/config.py son valores de configuración, no un inventario de equipos activos. Verifique NODE1_URL, NODE2_URL y NODE3_URL en su red. El proceso escucha por defecto en 0.0.0.0; NODE_HOST y COORDINATOR_HOST permiten restringir la interfaz.
+**Host D — node3:**
 
-**Contrato público**
+```powershell
+$env:NODE_ID="node3"
+$env:NODE_PORT="8003"
+python -m node.main
+```
 
-| Método y ruta | Comportamiento |
-| --- | --- |
-| GET /health | Salud del coordinador y acceso al catálogo, sin sondear nodos. No requiere clave. |
-| POST /upload | Crea o actualiza un nombre. Devuelve 201 después de verificar dos copias. |
-| GET /download/{filename} | Descarga verificada. Si el principal falla o está corrupto, consulta la réplica. |
-| GET /files | Metadatos publicados; COMMITTED no es un diagnóstico actual de disponibilidad. |
-| GET /status | Sondeo concurrente de identidad y escritura de los nodos. READY describe el nodo. |
-| GET /integrity | Lee y comprueba las copias: AVAILABLE, DEGRADED o UNAVAILABLE por archivo. |
-| POST /repair/{filename} | Recupera una copia válida y publica una nueva versión con dos copias verificadas. |
-| POST /maintenance | Reintenta la limpieza pendiente; también se ejecuta en segundo plano cada 30 s. |
+**Host A — coordinador:**
 
-Todas las rutas, salvo /health y las páginas de documentación, requieren CLIENT_API_KEY.
+```powershell
+$env:NODE1_URL="http://100.121.209.117:8001"
+$env:NODE2_URL="http://100.90.207.18:8002"
+$env:NODE3_URL="http://100.98.240.121:8003"
+python -m coordinator.main
+```
 
-| Código | Significado |
-| --- | --- |
-| 400 | Nombre inválido o solicitud mal formada. |
-| 401 | Credencial ausente o incorrecta. |
-| 404 | Nombre no registrado. |
-| 408 | La entrada del cliente dejó de enviar datos durante el plazo de lectura. |
-| 409 | Otra subida o reparación del mismo nombre está en curso. |
-| 413 | Archivo o cuerpo HTTP demasiado grande. |
-| 502 | No se lograron dos confirmaciones válidas y hubo metadatos incorrectos. |
-| 503 | Catálogo, nodos o copias válidas insuficientes. |
-| 504 | Se agotó el plazo de transferencia. |
+Sustituya esas direcciones si cambiaron en su red. El coordinador escucha en el puerto 8000. Desde el navegador de cualquier equipo que tenga acceso, abra `http://IP_COORDINADOR:8000/docs`.
 
-Un cliente que reciba 409 debe esperar y volver a consultar o reintentar. Si se pierde la respuesta después de un commit, el cliente debe consultar /files o descargar para comprobar el resultado; no hay una garantía de entrega exactamente una vez de la respuesta HTTP.
+Cada nodo utiliza su propio `storage/`. La pequeña identidad `.node.json` evita asignar accidentalmente ese directorio a otro `NODE_ID`. Si ya tiene datos, conserve el mismo identificador y directorio.
 
-Los nombres con #, %, espacios, acentos y emojis están soportados. Codifique el segmento del nombre al construir una URL. Se rechazan rutas, controles, nombres reservados de Windows y caracteres incompatibles entre Windows y Unix.
+## Uso
 
-**Publicación de archivos**
+Puede realizar las operaciones desde Swagger UI o desde PowerShell:
 
-1. Una transacción reserva el nombre y asigna un identificador de objeto nuevo. La versión anterior permanece publicada.
-2. El coordinador copia la entrada a un temporal y calcula tamaño y SHA-256 por bloques.
-3. Sondea los nodos en paralelo, verifica su identidad y selecciona almacenamientos distintos siguiendo round-robin.
-4. Envía las primeras dos copias en paralelo. Si una falla, intenta otro nodo disponible.
-5. Valida identidad del nodo y almacenamiento, identificador del objeto, tamaño y SHA-256 de cada confirmación.
-6. SQLite publica la nueva versión y sus dos ubicaciones en una transacción. Una operación simultánea sobre el mismo nombre recibe 409.
-7. Los objetos descartados quedan en una cola persistente de limpieza. Las versiones anteriores se conservan durante un margen que supera el plazo de descarga.
+```powershell
+$base="http://IP_COORDINADOR:8000"
+curl.exe -F "file=@./informe.pdf" "$base/upload"
+curl.exe "$base/files"
+curl.exe -D "./cabeceras.txt" -o "./descargado.pdf" "$base/download/informe.pdf"
+curl.exe "$base/status"
+```
 
-En una descarga, el coordinador verifica una copia completa en disco temporal antes de enviar su contenido. La memoria de transferencia se mantiene acotada; se necesita espacio temporal y la respuesta comienza después de verificar el archivo. El failover incluye contenido corrupto, no solo errores de conexión.
+Sustituya `IP_COORDINADOR` y use un archivo que exista. La descarga incluye `X-Storage-Node`, que identifica el nodo que entregó el contenido y permite evidenciar el cambio a la réplica.
 
-**Persistencia y migración**
+### API del coordinador
 
-El catálogo activo es catalog.sqlite3. Usa transacciones, restricciones de unicidad, WAL y sincronización FULL. No copie únicamente el archivo principal mientras el servicio está activo: utilice el script de respaldo.
+| Método | Ruta | Resultado |
+| --- | --- | --- |
+| GET | `/health` | Comprueba el coordinador y la lectura del catálogo. |
+| POST | `/upload` | Multipart con `file`; responde `201` después de confirmar dos copias. |
+| GET | `/files` | Lista metadatos y ubicaciones registradas. |
+| GET | `/download/{filename}` | Recupera una copia válida y responde `200`. |
+| GET | `/status` | Sondea los nodos e informa `UP` o `DOWN`. |
 
-La primera inicialización importa catalog.json en una transacción y conserva el JSON original. Las entradas migradas mantienen sus nombres físicos originales; no hace falta mover los archivos. Una vez inicializada la base, el JSON deja de ser la fuente de verdad y no se vuelve a importar.
+### API de cada nodo
 
-Si el JSON está dañado o sus metadatos son inválidos, la migración falla y conserva el original. Si SQLite está dañado, las peticiones fallan sin sustituirlo por un catálogo vacío. Corrija o restaure los metadatos antes de volver a operar.
+| Método | Ruta | Resultado |
+| --- | --- | --- |
+| GET | `/health` | Identidad, ruta de almacenamiento y cantidad de objetos. |
+| POST | `/store` | Guarda el objeto recibido y devuelve tamaño y hash. |
+| GET | `/retrieve/{filename}` | Recupera el objeto físico del disco. |
 
-~~~powershell
-python scripts/backup_catalog.py ./backups/catalog-2026-10-12.sqlite3
-~~~
+El nombre visible del cliente puede ser `informe.pdf`, mientras el archivo físico es un identificador como `a73f...`. Esa relación aparece en `/files`, campo `storage_key`. Se usa un identificador nuevo por intento para evitar que una subida fallida altere otro archivo. El contenido guardado es el original, sin cifrado ni transformación.
 
-Guarde los respaldos fuera del equipo coordinador. Para recuperar, detenga los procesos del coordinador y configure CATALOG_DB hacia un respaldo consistente ubicado en una ruta nueva. No sobrescriba una base abierta ni mezcle sus archivos WAL con los de otro respaldo.
+Los errores principales son `400` (nombre inválido), `404` (archivo ausente), `409` (nombre repetido), `413` (tamaño excesivo), `422` (formulario incompleto) y `503` (catálogo o copias disponibles insuficientes). Codifique los nombres con espacios, `#`, `%` o Unicode al construir una URL.
 
-Un respaldo antiguo puede referenciar versiones que la limpieza ya eliminó. Para recuperar un punto anterior de forma completa también se necesitan las copias de objetos correspondientes. Un respaldo del catálogo por sí solo no constituye un respaldo histórico de los archivos.
+## Configuración
 
-**Configuración adicional**
+Las variables se leen al arrancar cada proceso; `.env.example` no se importa automáticamente.
 
 | Variable | Predeterminado | Uso |
 | --- | --- | --- |
-| CATALOG_DB | ./catalog.sqlite3 | Ruta del catálogo SQLite; raíz del proyecto por defecto. |
-| MAX_FILE_SIZE | 104857600 | Máximo por archivo: 100 MiB. Configure el mismo valor en todos los procesos. |
-| MAX_CONCURRENT_TRANSFERS | 4 | Límite de transferencias por proceso. |
-| TRANSFER_TIMEOUT | 120 | Plazo en segundos para replicar o recuperar una copia. |
-| PENDING_TTL | 600 | Recuperación de reservas abandonadas; mínimo efectivo de dos plazos de transferencia. |
-| GARBAGE_GRACE | 300 | Retención de la versión anterior; mínimo efectivo de dos plazos de transferencia. |
-| MAINTENANCE_INTERVAL | 30 | Intervalo de limpieza del coordinador, en segundos. |
-| COORDINATOR_URL | http://127.0.0.1:8000 | Destino usado por el script de conectividad. |
+| `NODE_ID` | `node1` | Identificador del nodo. |
+| `NODE_HOST` / `NODE_PORT` | `0.0.0.0` / `8001` | Interfaz y puerto del nodo. |
+| `STORAGE_DIR` | `<raíz>/storage` | Directorio de datos del nodo. |
+| `COORDINATOR_HOST` / `COORDINATOR_PORT` | `0.0.0.0` / `8000` | Interfaz y puerto del coordinador. |
+| `NODE1_URL`, `NODE2_URL`, `NODE3_URL` | Direcciones de `common/config.py` | Ubicaciones HTTP de los nodos. |
+| `CATALOG_FILE` | `<raíz>/catalog.json` | Catálogo del coordinador. |
+| `MAX_FILE_SIZE` | `10485760` | Máximo por archivo: 10 MiB; mismo valor en los cuatro procesos. |
+| `COORDINATOR_URL` | `http://127.0.0.1:8000` con el puerto configurado | URL que consulta el script de conectividad. |
 
-La reparación tiene una fase de recuperación y otra de replicación, cada una con su plazo. Las reservas incluyen todos los nodos candidatos antes de enviar bytes, de modo que un reinicio o una respuesta perdida no deje copias sin seguimiento.
+Los tiempos de conexión y de espera de datos son 3 y 10 segundos, respectivamente. No representan un plazo total para toda la operación.
 
-Un nodo guarda marcas de eliminación en .deleted para bloquear escrituras retrasadas de objetos cancelados. No borre .deleted, .locks ni .node.json durante la operación. Los temporales de procesos muertos se limpian al reiniciar el nodo; los temporales de procesos activos están protegidos por bloqueos.
+## Catálogo y actualización desde la versión anterior
 
-**Verificación**
+El catálogo JSON se crea automáticamente. Un JSON dañado produce un error y se conserva para corregirlo; no se reemplaza por un catálogo vacío. Los JSON originales sin `storage_key` siguen utilizando sus nombres físicos anteriores.
 
-~~~powershell
+Si llegó a utilizar la versión SQLite, detenga los procesos de esa versión y exporte antes de iniciar el nuevo coordinador:
+
+```powershell
+python scripts/migrate_catalog.py ./catalog.sqlite3 ./catalog.json
+```
+
+La exportación es de solo lectura sobre SQLite y rechaza un destino existente. Conserva los identificadores y ubicaciones de los archivos publicados. Si hay un JSON anterior, elija un destino nuevo y configure `CATALOG_FILE` con esa ruta; no sobrescriba los catálogos.
+
+Las antiguas operaciones pendientes y las colas de limpieza no se importan. Las carpetas `.locks` y `.deleted` de una instalación anterior dejan de utilizarse; la nueva versión no las crea ni las elimina. `.node.json` sigue identificando el directorio.
+
+Para respaldar esta versión, detenga el coordinador y copie `catalog.json`; respalde también los directorios de los nodos si necesita conservar los archivos.
+
+## Verificación
+
+```powershell
 python -m unittest discover -s tests -v
 python tests/smoke_http.py
 python scripts/test_connectivity.py
-~~~
+```
 
-La suite usa directorios temporales y transporte ASGI para reproducir los fallos. La prueba smoke inicia cuatro procesos Uvicorn en puertos locales libres, verifica transferencias de varios MiB, detiene un nodo, reinicia el coordinador y comprueba la reparación. Finaliza sus procesos y elimina sus datos temporales.
+Las **34 pruebas** utilizan directorios temporales y comprueban distribución, réplicas reales, fallos, hashes, persistencia, nombres duplicados, concurrencia básica, límites y compatibilidad de catálogos.
 
-El script de conectividad consulta /health del coordinador de forma independiente, usa NODE_API_KEY para sondear los nodos y devuelve código de salida 1 si algún servicio falla. La integridad de los archivos se verifica con /integrity.
+La prueba HTTP inicia tres nodos y un coordinador en puertos locales libres. Verifica los archivos físicos, detiene un nodo, descarga desde la réplica, detiene el coordinador, comprueba el acceso directo al nodo y reinicia el servicio con el mismo JSON. Al terminar cierra sus procesos y elimina sus datos.
 
-La explicación de cada corrección y sus límites está en [docs/CORRECCIONES.md](docs/CORRECCIONES.md).
+El script de conectividad consulta procesos reales: ejecútelo con las URL del despliegue. Devuelve `0` si todos responden y `1` si alguno falla. Desde otro equipo, configure primero `COORDINATOR_URL` con la IP del coordinador.
+
+En Python 3.14, la combinación de dependencias existente muestra avisos de deprecación y de recursos internos de TestClient/AnyIO durante la suite. Las aserciones y la prueba HTTP se revisan por separado; esos avisos no acreditan ni invalidan la conectividad entre los cuatro equipos.
+
+## Límites que deben explicarse
+
+- Un proceso coordinador por catálogo y un proceso por directorio de nodo. El bloqueo local no coordina varios procesos ni varios coordinadores.
+- El coordinador es un punto único de fallo: sin él, subir, listar y descargar por la URL pública deja de funcionar. Los nodos conservan los objetos y pueden entregarlos directamente si se conoce su identificador.
+- Una subida necesita dos copias confirmadas; una descarga necesita una de las dos copias registrada en el catálogo.
+- Si una subida falla después de guardar una copia, esa copia puede quedar sin registrar. No se publica como disponible y un nuevo intento usa otro identificador. La limpieza automática queda fuera del laboratorio.
+- Los nombres existentes se rechazan. No hay borrado público, versiones, reparación, elección de líder ni catálogo replicado.
+- El procesamiento secuencial y el uso de memoria son adecuados para archivos pequeños y pocas peticiones; no se ofrecen garantías de rendimiento, alta carga o recuperación ante cortes eléctricos.
+- `UP` comprueba la respuesta del nodo; `COMMITTED` indica una publicación previa. El hash se verifica al descargar. Ninguno de esos estados significa que todas las copias sigan íntegras para siempre.
+
+El inventario, las evidencias pendientes y las preguntas de sustentación están en [DEMOSTRACION.md](docs/DEMOSTRACION.md).

@@ -1,510 +1,312 @@
-"""Regresiones del diagnóstico: HTTP real de FastAPI sobre transporte ASGI, discos aislados."""
-import asyncio
+"""Pruebas de los requisitos y de las protecciones básicas; todo el disco es temporal."""
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
+from contextlib import ExitStack, closing
 import hashlib
 import json
 import os
 from pathlib import Path
 import sqlite3
 import tempfile
-import threading
 import unittest
 from unittest.mock import patch
 from urllib.parse import quote
 
-# Ninguna importación de las apps debe inicializar almacenamiento del proyecto.
-_bootstrap = tempfile.TemporaryDirectory(prefix="mini-drive-tests-bootstrap-")
-os.environ["STORAGE_DIR"] = str(Path(_bootstrap.name) / "default-node")
+_bootstrap = tempfile.TemporaryDirectory(prefix="mini-drive-tests-")
+os.environ["STORAGE_DIR"] = str(Path(_bootstrap.name) / "bootstrap")
 os.environ["NODE_ID"] = "node1"
-os.environ["CLIENT_API_KEY"] = "client-test-" + "c" * 40
-os.environ["NODE_API_KEY"] = "node-test-" + "n" * 40
+os.environ.pop("CLIENT_API_KEY", None)
+os.environ.pop("NODE_API_KEY", None)
+unittest.addModuleCleanup(_bootstrap.cleanup)
 
 import httpx
+from fastapi.testclient import TestClient
 
-from common import files as file_utils, security
-from coordinator.catalog import CatalogError, CatalogManager, UploadConflict
+from common import files as file_utils
 from coordinator import main as coordinator, services
+from coordinator.catalog import CatalogError, CatalogManager
 from node.main import create_app as create_node
-from node import router as node_router
+from scripts.migrate_catalog import migrate
 
 NODES = [{"id": f"node{i}", "name": f"Nodo {i}", "url": f"http://node{i}"} for i in (1, 2, 3)]
-CLIENT_HEADERS = {"Authorization": "Bearer " + os.environ["CLIENT_API_KEY"]}
-NODE_HEADERS = {"Authorization": "Bearer " + os.environ["NODE_API_KEY"]}
 
 
-class ClusterTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="mini-drive-regression-")
-        self.root = Path(self.temp.name)
-        self.catalog = CatalogManager(self.root / "catalog.sqlite3")
-        self.apps = {node["id"]: create_node(self.root / node["id"], node["id"]) for node in NODES}
-        self.storage = {node_id: app.state.storage for node_id, app in self.apps.items()}
-        self.down, self.bad_ack, self.lost_ack = set(), set(), set()
-        self.store_down = set()
-        self.requests = []
-        self.before = None
-        owner = self
+class ClusterTests(unittest.TestCase):
+    def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory(prefix="mini-drive-cluster-")))
+        self.catalog = CatalogManager(self.root / "catalog.json")
+        self.apps = {n["id"]: create_node(self.root / n["id"], n["id"]) for n in NODES}
+        self.clients = {key: self.stack.enter_context(TestClient(app)) for key, app in self.apps.items()}
+        self.down, self.store_down, self.bad_ack, self.lost_ack = set(), set(), set(), set()
 
-        class RouterTransport(httpx.AsyncBaseTransport):
-            async def handle_async_request(self, request):
-                node_id, path = request.url.host, request.url.path
-                owner.requests.append((node_id, request.method, path))
-                await request.aread()
-                if node_id in owner.down or (path == "/store" and node_id in owner.store_down):
-                    raise httpx.ConnectError("simulated node failure", request=request)
-                if owner.before:
-                    await owner.before(request)
-                response = await httpx.ASGITransport(app=owner.apps[node_id]).handle_async_request(request)
-                if path == "/store" and response.status_code == 201:
-                    if node_id in owner.lost_ack:
-                        raise httpx.ReadTimeout("simulated acknowledgement loss", request=request)
-                    if node_id in owner.bad_ack:
-                        return httpx.Response(201, json={"status": "stored", "sha256": "incorrect"}, request=request)
-                return response
+        def route(request):
+            self.assertNotIn("authorization", request.headers)
+            node_id, path = request.url.host, request.url.path
+            if node_id in self.down or (path == "/store" and node_id in self.store_down):
+                raise httpx.ConnectError("Nodo detenido", request=request)
+            response = self.clients[node_id].request(request.method, path,
+                        content=request.read(), headers=dict(request.headers))
+            if path == "/store" and response.status_code == 201:
+                if node_id in self.lost_ack:
+                    raise httpx.ReadTimeout("Respuesta perdida", request=request)
+                if node_id in self.bad_ack:
+                    return httpx.Response(201, json={"sha256": "incorrect"})
+            return response
 
         def client_factory(**kwargs):
-            return httpx.AsyncClient(transport=RouterTransport(), **kwargs)
+            return httpx.Client(transport=httpx.MockTransport(route), **kwargs)
 
-        self.node_patch = patch.object(services, "DEFAULT_NODES", NODES)
-        self.client_patch = patch.object(services, "client_factory", client_factory)
-        self.node_patch.start()
-        self.client_patch.start()
+        self.stack.enter_context(patch.object(services, "DEFAULT_NODES", NODES))
+        self.stack.enter_context(patch.object(services, "client_factory", client_factory))
         self.app = coordinator.create_app(self.catalog)
-        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),
-                                       base_url="http://coordinator", headers=CLIENT_HEADERS)
+        self.client = self.stack.enter_context(TestClient(self.app))
 
-    async def asyncTearDown(self):
-        await self.client.aclose()
-        self.client_patch.stop()
-        self.node_patch.stop()
-        self.temp.cleanup()
+    def upload(self, name="document.txt", content=b"original"):
+        return self.client.post("/upload", files={"file": (name, content)})
 
-    async def upload(self, filename="document.txt", content=b"original"):
-        return await self.client.post("/upload", files={"file": (filename, content)})
+    def download(self, name="document.txt"):
+        return self.client.get("/download/" + quote(name, safe=""))
 
-    async def download(self, filename="document.txt"):
-        return await self.client.get("/download/" + quote(filename, safe=""))
+    def copies(self, name="document.txt"):
+        record = self.catalog.get_file(name)
+        return [(self.root / node / record["storage_key"]).read_bytes()
+                for node in (record["primary_node"], record["replica_node"])]
 
-    def copies(self, record):
-        return [(self.storage[node_id].directory / record["storage_key"]).read_bytes()
-                for node_id in (record["primary_node"], record["replica_node"])]
-
-    async def test_round_robin_and_two_copies(self):
-        pairs = []
-        for index in range(3):
+    def test_distribution_and_real_replicas(self):
+        expected = [("node1", "node2"), ("node2", "node3"), ("node3", "node1")]
+        for index, (primary, replica) in enumerate(expected):
             name = f"file{index}.txt"
-            response = await self.upload(name, b"content")
+            response = self.upload(name)
             self.assertEqual(response.status_code, 201, response.text)
-            pairs.append(response.json()["locations"])
-            self.assertEqual(self.copies(self.catalog.get_file(name)), [b"content", b"content"])
-        self.assertEqual(pairs, [{"primary": "node1", "replica": "node2"},
-                                 {"primary": "node2", "replica": "node3"},
-                                 {"primary": "node3", "replica": "node1"}])
+            self.assertEqual(response.json()["locations"], {"primary": primary, "replica": replica})
+            self.assertEqual(self.copies(name), [b"original"] * 2)
 
-    async def test_failed_overwrite_preserves_committed_version(self):
-        self.assertEqual((await self.upload()).status_code, 201)
-        old = self.catalog.get_file("document.txt")
-        self.store_down.update(("node2", "node3"))
-        response = await self.upload(content=b"new version")
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(self.catalog.get_file("document.txt"), old)
-        self.assertEqual(self.copies(old), [b"original", b"original"])
-        self.assertEqual((await self.download()).content, b"original")
-
-    async def test_successful_overwrite_publishes_new_key_and_defers_old_cleanup(self):
-        await self.upload()
-        old = self.catalog.get_file("document.txt")
-        self.assertEqual((await self.upload(content=b"new")).status_code, 201)
-        current = self.catalog.get_file("document.txt")
-        self.assertNotEqual(old["storage_key"], current["storage_key"])
-        self.assertEqual((await self.download()).content, b"new")
-        await self.client.post("/maintenance")
-        self.assertEqual(self.copies(old), [b"original", b"original"])
-        with closing(sqlite3.connect(self.catalog.filepath)) as db, db:
-            db.execute("UPDATE garbage SET not_before=0 WHERE storage_key=?", (old["storage_key"],))
-        await self.client.post("/maintenance")
-        for node_id in (old["primary_node"], old["replica_node"]):
-            self.assertFalse((self.storage[node_id].directory / old["storage_key"]).exists())
-        self.assertEqual(self.copies(current), [b"new", b"new"])
-
-    async def test_concurrent_same_name_has_one_conflict(self):
-        entered, release = asyncio.Event(), asyncio.Event()
-
-        async def before(request):
-            if request.url.path == "/store" and request.url.host == "node1":
-                entered.set()
-                await release.wait()
-        self.before = before
-        first = asyncio.create_task(self.upload(content=b"VERSION_A"))
-        try:
-            await asyncio.wait_for(entered.wait(), 5)
-            second = await self.upload(content=b"VERSION_B")
-            self.assertEqual(second.status_code, 409, second.text)
-        finally:
-            release.set()
-        self.assertEqual((await first).status_code, 201)
-        self.assertEqual(self.copies(self.catalog.get_file("document.txt")), [b"VERSION_A"] * 2)
-
-    async def test_node_down_is_replaced_by_third_node(self):
+    def test_primary_failure_uses_replica_and_identifies_it(self):
+        self.upload()
         self.down.add("node1")
-        response = await self.upload()
+        response = self.download()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"original")
+        self.assertEqual(response.headers["X-Storage-Node"], "node2")
+
+    def test_replica_failure_preserves_primary_download(self):
+        self.upload()
+        self.down.add("node2")
+        self.assertEqual(self.download().headers["X-Storage-Node"], "node1")
+
+    def test_both_copies_down(self):
+        self.upload()
+        self.down.update(("node1", "node2"))
+        self.assertEqual(self.download().status_code, 503)
+
+    def test_corruption_uses_replica(self):
+        self.upload()
+        record = self.catalog.get_file("document.txt")
+        (self.root / "node1" / record["storage_key"]).write_bytes(b"INVALID!")
+        response = self.download()
+        self.assertEqual(response.content, b"original")
+        self.assertEqual(response.headers["X-Storage-Node"], "node2")
+        (self.root / "node2" / record["storage_key"]).write_bytes(b"INVALID!")
+        self.assertEqual(self.download().status_code, 503)
+
+    def test_alternative_node_when_a_node_is_down(self):
+        self.down.add("node1")
+        response = self.upload()
         self.assertEqual(response.status_code, 201, response.text)
         self.assertEqual(response.json()["locations"], {"primary": "node2", "replica": "node3"})
 
-    async def test_store_failure_after_health_is_replaced(self):
+    def test_failure_after_health_uses_alternative(self):
         self.store_down.add("node1")
-        response = await self.upload()
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json()["locations"], {"primary": "node2", "replica": "node3"})
+        self.assertEqual(self.upload().json()["locations"], {"primary": "node2", "replica": "node3"})
 
-    async def test_failed_new_upload_is_tracked_and_cleaned(self):
+    def test_one_copy_does_not_publish_and_retry_uses_new_key(self):
         self.store_down.update(("node2", "node3"))
-        self.assertEqual((await self.upload()).status_code, 503)
-        self.assertIsNone(self.catalog.get_file("document.txt"))
-        pending = self.catalog.garbage()
-        self.assertEqual(len(pending), 3)
-        key = pending[0]["storage_key"]
-        self.assertTrue((self.storage["node1"].directory / key).exists())
-        response = await self.client.post("/maintenance")
-        self.assertEqual(response.json()["cleaned"], 3)
-        self.assertFalse((self.storage["node1"].directory / key).exists())
-        self.assertEqual(self.catalog.garbage(), [])
+        self.assertEqual(self.upload().status_code, 503)
+        self.assertEqual(self.catalog.list_files(), {})
+        old_keys = {p.name for p in (self.root / "node1").iterdir() if not p.name.startswith(".")}
+        self.assertEqual(len(old_keys), 1)
+        self.store_down.clear()
+        self.assertEqual(self.upload(content=b"retry").status_code, 201)
+        self.assertNotIn(self.catalog.get_file("document.txt")["storage_key"], old_keys)
+        self.assertEqual(self.copies(), [b"retry"] * 2)
 
-    async def test_cleanup_retries_when_node_returns(self):
-        self.store_down.update(("node2", "node3"))
-        await self.upload()
-        self.down.add("node1")
-        await self.client.post("/maintenance")
-        self.assertEqual(len(self.catalog.garbage()), 1)
-        self.down.clear()
-        await self.client.post("/maintenance")
-        self.assertEqual(self.catalog.garbage(), [])
-
-    async def test_lost_ack_does_not_leave_an_untracked_copy(self):
-        self.lost_ack.add("node1")
-        self.assertEqual((await self.upload()).status_code, 201)
-        record = self.catalog.get_file("document.txt")
-        self.assertTrue((self.storage["node1"].directory / record["storage_key"]).exists())
-        await self.client.post("/maintenance")
-        self.assertFalse((self.storage["node1"].directory / record["storage_key"]).exists())
-        self.assertEqual(self.copies(record), [b"original"] * 2)
-
-    async def test_bad_ack_is_not_committed(self):
+    def test_bad_ack_is_not_counted_as_a_copy(self):
         self.bad_ack.update(("node1", "node2", "node3"))
-        self.assertEqual((await self.upload()).status_code, 502)
+        self.assertEqual(self.upload().status_code, 503)
         self.assertEqual(self.catalog.list_files(), {})
 
-    async def test_corrupt_primary_uses_verified_replica(self):
-        await self.upload()
-        record = self.catalog.get_file("document.txt")
-        (self.storage["node1"].directory / record["storage_key"]).write_bytes(b"CORRUPTED")
-        response = await self.download()
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, b"original")
-        audit = await self.client.get("/integrity")
-        self.assertEqual(audit.json()["files"]["document.txt"]["status"], "DEGRADED")
-        self.assertEqual(audit.json()["files"]["document.txt"]["copies"][0]["status"], "CORRUPT")
+    def test_lost_ack_can_use_other_two_nodes(self):
+        self.lost_ack.add("node1")
+        self.assertEqual(self.upload().json()["locations"], {"primary": "node2", "replica": "node3"})
 
-    async def test_missing_both_copies_is_reported_by_integrity(self):
-        await self.upload()
-        record = self.catalog.get_file("document.txt")
-        for node_id in ("node1", "node2"):
-            (self.storage[node_id].directory / record["storage_key"]).unlink()
-        response = await self.client.get("/status")
-        self.assertEqual(response.json()["scope"], "NODE_READINESS")
-        self.assertTrue(all(node["status"] == "READY" for node in response.json()["nodes"]))
-        self.assertEqual((await self.client.get("/integrity")).json()["files"]["document.txt"]["status"], "UNAVAILABLE")
-        self.assertEqual((await self.download()).status_code, 503)
+    def test_duplicate_name_preserves_original(self):
+        self.assertEqual(self.upload().status_code, 201)
+        before = self.catalog.get_file("document.txt")
+        self.assertEqual(self.upload(content=b"replacement").status_code, 409)
+        self.assertEqual(self.catalog.get_file("document.txt"), before)
+        self.assertEqual(self.copies(), [b"original"] * 2)
 
-    async def test_repair_restores_two_verified_copies(self):
-        await self.upload()
-        record = self.catalog.get_file("document.txt")
-        (self.storage["node1"].directory / record["storage_key"]).write_bytes(b"corrupt")
-        response = await self.client.post("/repair/document.txt")
-        self.assertEqual(response.status_code, 200, response.text)
-        repaired = self.catalog.get_file("document.txt")
-        self.assertNotEqual(record["storage_key"], repaired["storage_key"])
-        self.assertEqual(self.copies(repaired), [b"original"] * 2)
-        self.assertEqual((await self.client.get("/integrity")).json()["files"]["document.txt"]["status"], "AVAILABLE")
+    def test_concurrent_duplicate_has_only_one_success(self):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(lambda content: self.upload(content=content), [b"first", b"second"]))
+        self.assertEqual(sorted(r.status_code for r in responses), [201, 409])
+        expected = b"first" if responses[0].status_code == 201 else b"second"
+        self.assertEqual(self.copies(), [expected] * 2)
 
-    async def test_special_and_unicode_names_round_trip(self):
-        for name in ("a#b.txt", "report-😀.txt", "100%.txt", "espacio y acento-á.txt"):
+    def test_concurrent_different_names_are_kept(self):
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            responses = list(pool.map(lambda i: self.upload(f"{i}.txt"), range(3)))
+        self.assertTrue(all(r.status_code == 201 for r in responses))
+        self.assertEqual(len(self.catalog.list_files()), 3)
+
+    def test_catalog_survives_restart(self):
+        self.upload()
+        reopened = CatalogManager(self.catalog.filepath)
+        with TestClient(coordinator.create_app(reopened)) as client:
+            response = client.get("/download/document.txt")
+            self.assertEqual(response.content, b"original")
+
+    def test_unicode_and_url_characters(self):
+        for name in ("report-😀.txt", "a#b.txt", "100%.txt", "espacio á.txt"):
             with self.subTest(name=name):
-                response = await self.upload(name, b"data")
-                self.assertEqual(response.status_code, 201, response.text)
-                downloaded = await self.download(name)
-                self.assertEqual(downloaded.status_code, 200)
-                self.assertEqual(downloaded.content, b"data")
-                self.assertIn("attachment;", downloaded.headers["content-disposition"])
+                self.assertEqual(self.upload(name).status_code, 201)
+                response = self.download(name)
+                self.assertEqual(response.content, b"original")
+                self.assertIn("filename*=UTF-8''", response.headers["content-disposition"])
 
-    async def test_invalid_names_are_client_errors(self):
-        for name in (".env", "../outside.txt", "a?b.txt", "CON.txt", "trailing.", "a:b.txt"):
+    def test_invalid_names(self):
+        for name in ("../outside", ".env", "CON.txt", "a:b.txt", "a?b.txt", "trailing."):
             with self.subTest(name=name):
-                response = await self.upload(name)
-                self.assertEqual(response.status_code, 400, response.text)
+                self.assertEqual(self.upload(name).status_code, 400)
         self.assertEqual(self.catalog.list_files(), {})
 
-    async def test_anonymous_requests_are_rejected_before_parsing(self):
-        response = await self.client.post("/upload", headers={"Authorization": ""}, content=b"invalid multipart")
-        self.assertEqual(response.status_code, 401)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.apps["node1"]), base_url="http://node1") as client:
-            for method, url in (("POST", "/store"), ("GET", "/retrieve/file.txt"), ("DELETE", "/objects/file.txt")):
-                self.assertEqual((await client.request(method, url)).status_code, 401)
-        self.assertEqual((await self.client.get("/health", headers={"Authorization": ""})).status_code, 200)
+    def test_empty_file(self):
+        self.assertEqual(self.upload(content=b"").status_code, 201)
+        self.assertEqual(self.download().content, b"")
 
-    async def test_unconfigured_auth_fails_closed(self):
-        with patch.dict(os.environ, {"CLIENT_API_KEY": ""}):
-            self.assertEqual((await self.client.get("/files")).status_code, 503)
-
-    async def test_file_size_limit_and_body_limit(self):
+    def test_size_limit_on_coordinator_and_node(self):
         with patch.object(file_utils, "MAX_FILE_SIZE", 3):
-            self.assertEqual((await self.upload(content=b"four")).status_code, 413)
-        with patch.object(security, "MAX_FILE_SIZE", 3):
-            response = await self.client.post("/upload", content=b"", headers={"Content-Length": str(1024 * 1024 + 4)})
-            self.assertEqual(response.status_code, 413)
+            self.assertEqual(self.upload(content=b"four").status_code, 413)
+            self.assertEqual(self.clients["node1"].post("/store", files={"file": ("key", b"four")}).status_code, 413)
+        self.assertEqual(self.catalog.list_files(), {})
 
-    async def test_chunked_body_limit(self):
-        async def body():
-            yield b'--boundary\r\nContent-Disposition: form-data; name="file"; filename="large.txt"\r\n\r\n'
-            for _ in range(18):
-                yield b"x" * 65536
-            yield b"\r\n--boundary--\r\n"
-        with patch.object(security, "MAX_FILE_SIZE", 3):
-            response = await self.client.post("/upload", content=body(), headers={"Content-Type": "multipart/form-data; boundary=boundary"})
-        self.assertEqual(response.status_code, 413, response.text)
+    def test_node_object_cannot_be_replaced(self):
+        for content, status in ((b"one", 201), (b"one", 201), (b"two", 409)):
+            self.assertEqual(self.clients["node1"].post("/store", files={"file": ("key", content)}).status_code, status)
 
-    async def test_stalled_upload_body_times_out(self):
-        async def body():
-            yield b'--boundary\r\nContent-Disposition: form-data; name="file"; filename="slow.txt"\r\n\r\n'
-            await asyncio.sleep(10)
-        with patch.object(security, "TIMEOUT_READ", 0.02):
-            response = await self.client.post("/upload", content=body(), headers={"Content-Type": "multipart/form-data; boundary=boundary"})
-        self.assertEqual(response.status_code, 408)
+    def test_no_cross_process_control_folders(self):
+        self.upload()
+        for node in ("node1", "node2", "node3"):
+            self.assertFalse((self.root / node / ".locks").exists())
+            self.assertFalse((self.root / node / ".deleted").exists())
 
-    async def test_tombstone_prevents_late_store_after_cancellation(self):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.apps["node1"]),
-                                    base_url="http://node1", headers=NODE_HEADERS) as client:
-            key = "cancelled-object"
-            self.assertEqual((await client.delete("/objects/" + key)).status_code, 204)
-            response = await client.post("/store", files={"file": (key, b"late")})
-            self.assertEqual(response.status_code, 410)
-            self.assertFalse((self.storage["node1"].directory / key).exists())
+    def test_wrong_identity_is_rejected(self):
+        self.apps["node1"].state.storage.node_id = "wrong"
+        self.assertEqual(self.upload().json()["locations"], {"primary": "node2", "replica": "node3"})
 
-    async def test_node_objects_cannot_be_overwritten(self):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.apps["node1"]),
-                                    base_url="http://node1", headers=NODE_HEADERS) as client:
-            for content, status in ((b"first", 201), (b"first", 201), (b"different", 409)):
-                response = await client.post("/store", files={"file": ("key", content)})
-                self.assertEqual(response.status_code, status)
-            self.assertEqual((await client.get("/retrieve/key")).content, b"first")
+    def test_same_storage_is_not_counted_twice(self):
+        identity = self.apps["node1"].state.storage.storage_id
+        for app in self.apps.values():
+            app.state.storage.storage_id = identity
+        self.assertEqual(self.upload().status_code, 503)
+        self.assertEqual(self.catalog.list_files(), {})
 
-    async def test_empty_file_round_trip(self):
-        self.assertEqual((await self.upload(content=b"")).status_code, 201)
-        response = await self.download()
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, b"")
+    def test_status_and_coordinator_health_are_separate(self):
+        self.down.update(n["id"] for n in NODES)
+        self.assertEqual(self.client.get("/health").status_code, 200)
+        self.assertTrue(all(n["status"] == "DOWN" for n in self.client.get("/status").json()["nodes"]))
 
-    async def test_same_size_corruption_is_rejected_by_hash(self):
-        await self.upload()
-        record = self.catalog.get_file("document.txt")
-        (self.storage["node1"].directory / record["storage_key"]).write_bytes(b"INVALID!")
-        self.assertEqual((await self.download()).content, b"original")
-        (self.storage["node2"].directory / record["storage_key"]).write_bytes(b"INVALID!")
-        self.assertEqual((await self.download()).status_code, 503)
+    def test_missing_file_and_missing_form(self):
+        self.assertEqual(self.download("missing").status_code, 404)
+        self.assertEqual(self.client.post("/upload").status_code, 422)
 
-    async def test_cancellation_during_commit_does_not_delete_published_data(self):
-        entered, release = threading.Event(), threading.Event()
-        original = self.catalog.commit_upload
+    def test_api_without_keys_or_extra_endpoints(self):
+        self.assertEqual(self.upload().status_code, 201)
+        self.assertNotIn("securitySchemes", self.app.openapi().get("components", {}))
+        self.assertEqual(set(self.app.openapi()["paths"]), {"/upload", "/download/{filename}", "/files", "/status", "/health"})
 
-        def delayed_commit(*args):
-            entered.set()
-            if not release.wait(5):
-                raise RuntimeError("La prueba no liberó el commit")
-            return original(*args)
+    def test_corrupt_catalog_is_not_reset(self):
+        self.catalog.filepath.write_text("{broken", encoding="utf-8")
+        self.assertEqual(self.client.get("/files").status_code, 503)
+        self.assertEqual(self.catalog.filepath.read_text(), "{broken")
 
-        with patch.object(self.catalog, "commit_upload", delayed_commit):
-            task = asyncio.create_task(self.upload())
-            try:
-                self.assertTrue(await asyncio.to_thread(entered.wait, 5))
-                task.cancel()
-            finally:
-                release.set()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-        record = self.catalog.get_file("document.txt")
-        self.assertIsNotNone(record)
-        await self.client.post("/maintenance")
-        self.assertEqual(self.copies(record), [b"original"] * 2)
-
-    async def test_cancellation_during_replication_registers_cleanup(self):
-        entered, release = asyncio.Event(), asyncio.Event()
-
-        async def before(request):
-            if request.url.path == "/store":
-                entered.set()
-                await release.wait()
-        self.before = before
-        task = asyncio.create_task(self.upload())
-        await asyncio.wait_for(entered.wait(), 5)
-        task.cancel()
-        with self.assertRaises(asyncio.CancelledError):
-            await task
-        self.assertIsNone(self.catalog.get_file("document.txt"))
-        self.assertEqual(len(self.catalog.garbage()), 3)
-
-    async def test_wrong_node_identity_is_not_used(self):
-        self.storage["node1"].node_id = "unexpected-node"
-        response = await self.upload()
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json()["locations"], {"primary": "node2", "replica": "node3"})
-
-    async def test_probe_calls_are_concurrent(self):
-        entered, release = set(), asyncio.Event()
-        all_entered = asyncio.Event()
-
-        async def before(request):
-            if request.url.path == "/health":
-                entered.add(request.url.host)
-                if len(entered) == 3:
-                    all_entered.set()
-                await release.wait()
-        self.before = before
-        task = asyncio.create_task(self.client.get("/status"))
-        try:
-            await asyncio.wait_for(all_entered.wait(), 5)
-        finally:
-            release.set()
-        self.assertEqual((await task).status_code, 200)
-
-    async def test_timeout_preserves_previous_version(self):
-        await self.upload()
-        previous = self.catalog.get_file("document.txt")
-
-        async def before(request):
-            if request.url.path == "/store":
-                await asyncio.sleep(10)
-        self.before = before
-        with patch.object(coordinator, "TRANSFER_TIMEOUT", 0.1):
-            response = await self.upload(content=b"new")
-        self.assertEqual(response.status_code, 504)
-        self.assertEqual(self.catalog.get_file("document.txt"), previous)
-
-    async def test_legacy_json_data_remains_downloadable(self):
-        name = "legacy#á.txt"
-        digest = hashlib.sha256(b"legacy").hexdigest()
-        entry = {"filename": name, "size_bytes": 6, "sha256": digest, "primary_node": "node1",
-                 "replica_node": "node2", "created_at": "2026-01-01T00:00:00", "status": "COMMITTED"}
-        legacy = self.root / "legacy.json"
-        legacy.write_text(json.dumps({"round_robin_index": 0, "files": {name: entry}}), encoding="utf-8")
-        imported = CatalogManager(self.root / "import.sqlite3", legacy_file=legacy)
-        for node_id in ("node1", "node2"):
-            (self.storage[node_id].directory / name).write_bytes(b"legacy")
-        self.app.state.catalog = imported
-        self.assertEqual((await self.download(name)).content, b"legacy")
-        self.assertEqual(imported.get_file(name)["storage_key"], name)
-
-    async def test_corrupt_database_returns_503_without_reset(self):
-        # Cerrar todas las conexiones (cada operación abre y cierra la suya).
-        self.catalog.filepath.write_bytes(b"not a SQLite database")
-        response = await self.client.get("/files")
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(self.catalog.filepath.read_bytes(), b"not a SQLite database")
+    def test_failed_catalog_write_does_not_lose_previous_entries(self):
+        self.upload()
+        before = self.catalog.filepath.read_bytes()
+        with patch.object(file_utils.os, "replace", side_effect=OSError("disk error")):
+            with self.assertRaises(CatalogError):
+                self.catalog.add_file({**self.catalog.get_file("document.txt"), "filename": "second.txt"}, 3)
+        self.assertEqual(self.catalog.filepath.read_bytes(), before)
+        self.assertFalse(list(self.root.glob(".pending-*")))
 
 
 class CatalogTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="mini-drive-catalog-")
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.catalog = CatalogManager(self.root / "catalog.sqlite3")
 
-    def tearDown(self):
-        self.temp.cleanup()
+    def record(self):
+        return {"filename": "legacy.txt", "storage_key": "original-key", "size_bytes": 4,
+                "sha256": hashlib.sha256(b"data").hexdigest(), "primary_node": "node1",
+                "replica_node": "node2", "created_at": "2026-10-12", "status": "COMMITTED"}
 
-    def test_parallel_connections_do_not_lose_updates(self):
-        def write(index):
-            manager = CatalogManager(self.catalog.filepath)
-            operation = manager.reserve_upload(f"{index}.txt", NODES)
-            manager.commit_upload(operation["operation_id"], 1, "a" * 64, "node1", "node2")
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(write, range(24)))
-        self.assertEqual(len(self.catalog.list_files()), 24)
+    def test_new_catalog_initializes_without_template(self):
+        manager = CatalogManager(self.root / "catalog.json")
+        self.assertEqual(manager.list_files(), {})
+        self.assertEqual(manager.candidates(NODES), NODES)
 
-    def test_reservation_excludes_other_managers(self):
-        first = self.catalog.reserve_upload("same.txt", NODES)
-        other = CatalogManager(self.catalog.filepath)
-        with self.assertRaises(UploadConflict):
-            other.reserve_upload("same.txt", NODES)
-        self.catalog.abort_upload(first["operation_id"])
-        other.reserve_upload("same.txt", NODES)
+    def test_corrupt_json_blocks_initialization(self):
+        path = self.root / "catalog.json"
+        path.write_text("broken", encoding="utf-8")
+        with self.assertRaises(CatalogError):
+            CatalogManager(path)
+        self.assertEqual(path.read_text(), "broken")
 
-    def test_expired_reservation_is_recovered_and_cannot_commit(self):
-        pending = self.catalog.reserve_upload("file.txt", NODES)
-        with closing(sqlite3.connect(self.catalog.filepath)) as db, db:
-            db.execute("UPDATE uploads SET created_at=0")
-        restarted = CatalogManager(self.catalog.filepath)
-        restarted.expire_uploads()
-        with self.assertRaises(UploadConflict):
-            self.catalog.commit_upload(pending["operation_id"], 1, "a" * 64, "node1", "node2")
-        self.assertEqual(len(restarted.garbage()), 3)
-        restarted.reserve_upload("file.txt", NODES)
+    def test_legacy_json_keeps_physical_filename(self):
+        record = self.record()
+        record.pop("storage_key")
+        path = self.root / "catalog.json"
+        path.write_text(json.dumps({"round_robin_index": 1, "files": {"legacy.txt": record}}))
+        manager = CatalogManager(path)
+        self.assertEqual(manager.get_file("legacy.txt")["storage_key"], "legacy.txt")
+        self.assertEqual(manager.candidates(NODES)[0]["id"], "node2")
 
-    def test_invalid_legacy_json_is_preserved_and_blocks_migration(self):
-        legacy = self.root / "broken.json"
-        legacy.write_text("{truncated", encoding="utf-8")
-        database = self.root / "new.sqlite3"
-        for _ in range(2):
-            with self.assertRaises(CatalogError):
-                CatalogManager(database, legacy_file=legacy)
-        self.assertEqual(legacy.read_text(encoding="utf-8"), "{truncated")
-        legacy.write_text('{"round_robin_index": 0, "files": {}}', encoding="utf-8")
-        self.assertEqual(CatalogManager(database, legacy_file=legacy).list_files(), {})
+    def test_existing_sqlite_requires_explicit_migration(self):
+        (self.root / "catalog.sqlite3").write_bytes(b"not overwritten")
+        with self.assertRaises(CatalogError):
+            CatalogManager(self.root / "catalog.json")
+        self.assertFalse((self.root / "catalog.json").exists())
 
-    def test_backup_can_be_opened_independently(self):
-        pending = self.catalog.reserve_upload("file.txt", NODES)
-        self.catalog.commit_upload(pending["operation_id"], 1, "a" * 64, "node1", "node2")
-        backup = self.root / "backup.sqlite3"
-        self.catalog.backup(backup)
-        self.assertEqual(CatalogManager(backup).list_files(), self.catalog.list_files())
+    def test_sqlite_export_preserves_mapping_and_source(self):
+        source, destination = self.root / "old.sqlite3", self.root / "catalog.json"
+        record = self.record()
+        with closing(sqlite3.connect(source)) as connection, connection:
+            connection.execute("CREATE TABLE files (filename, storage_key, size_bytes, sha256, primary_node, replica_node, created_at)")
+            connection.execute("INSERT INTO files VALUES (?, ?, ?, ?, ?, ?, ?)", tuple(record[k] for k in
+                               ("filename", "storage_key", "size_bytes", "sha256", "primary_node", "replica_node", "created_at")))
+            connection.execute("CREATE TABLE metadata (key, value)")
+            connection.execute("INSERT INTO metadata VALUES ('round_robin_index', '2')")
+        before = source.read_bytes()
+        self.assertEqual(migrate(source, destination), 1)
+        manager = CatalogManager(destination)
+        self.assertEqual(manager.get_file("legacy.txt"), record)
+        self.assertEqual(manager.candidates(NODES)[0]["id"], "node3")
+        self.assertEqual(source.read_bytes(), before)
+        with self.assertRaises(FileExistsError):
+            migrate(source, destination)
 
-    def test_node_directory_cannot_be_shared_by_different_ids(self):
-        directory = self.root / "storage"
-        node_router.NodeStorage(directory, "node1")
+    def test_storage_directory_keeps_its_identity(self):
+        create_node(self.root / "storage", "node1")
         with self.assertRaises(RuntimeError):
-            node_router.NodeStorage(directory, "node2")
+            create_node(self.root / "storage", "node2")
 
-    def test_abandoned_node_temporaries_are_removed_on_restart(self):
-        directory = self.root / "storage"
-        node_router.NodeStorage(directory, "node1")
-        temporary = directory / ".pending-abandoned.tmp"
-        temporary.write_bytes(b"partial data")
-        node_router.NodeStorage(directory, "node1")
-        self.assertFalse(temporary.exists())
-
-    def test_active_node_temporaries_survive_other_worker_startup(self):
-        directory = self.root / "storage"
-        storage = node_router.NodeStorage(directory, "node1")
-        temporary = directory / ".pending-active.tmp"
-        with file_utils.file_lock(storage.locks / temporary.stem):
-            temporary.write_bytes(b"active data")
-            node_router.NodeStorage(directory, "node1")
-            self.assertTrue(temporary.exists())
-
-    def test_duplicate_node_urls_are_rejected(self):
-        nodes = [dict(NODES[0]), dict(NODES[1], url=NODES[0]["url"])]
+    def test_duplicate_urls_rejected(self):
+        nodes = [*NODES[:2], dict(NODES[2], url=NODES[0]["url"])]
         with patch.object(services, "DEFAULT_NODES", nodes):
             with self.assertRaises(services.NodeError):
                 services.get_nodes()
-
-    def test_cleanup_failure_does_not_starve_later_entries(self):
-        with self.catalog._transaction() as db:
-            for index in range(101):
-                db.execute("INSERT INTO garbage VALUES (?, ?, ?)", (str(index), "node1", index))
-        batch = self.catalog.garbage()
-        self.assertEqual(len(batch), 100)
-        for item in batch:
-            self.catalog.retry_cleanup_later(item["storage_key"], item["node_id"])
-        self.assertEqual(self.catalog.garbage()[0]["storage_key"], "100")
 
 
 if __name__ == "__main__":
