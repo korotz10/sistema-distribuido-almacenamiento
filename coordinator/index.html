@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mini Drive Distribuido</title>
+<style>
+  :root{
+    --bg:#0e1420; --panel:#151d2e; --panel2:#1a2438; --line:#26324a; --text:#e6ebf5; --muted:#8c9ab5;
+    --primary:#2dd4bf; --replica:#a78bfa; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  header{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid var(--line)}
+  h1{font-size:18px;margin:0;font-weight:650;letter-spacing:.2px}
+  h1 small{display:block;font-weight:400;color:var(--muted);font-size:12px;margin-top:2px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 12px;font-weight:600}
+  .stats{display:flex;gap:20px;flex-wrap:wrap}
+  .stat b{font-size:20px;display:block;font-variant-numeric:tabular-nums}
+  .stat span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  main{max-width:1280px;margin:0 auto;padding:20px 24px 48px;display:grid;gap:20px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}
+  @media(max-width:900px){.grid2{grid-template-columns:1fr}}
+
+  /* Topología */
+  #topo{position:relative;padding:8px 0 0}
+  #topo svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+  .coord{width:280px;max-width:100%;margin:0 auto 64px;text-align:center;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 14px;position:relative}
+  .coord strong{display:block}
+  .coord small{color:var(--muted)}
+  .nodes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;position:relative}
+  @media(max-width:800px){.nodes{grid-template-columns:1fr}.coord{margin-bottom:32px}}
+  .node{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;transition:border-color .3s, box-shadow .3s}
+  .node.hl-p{border-color:var(--primary);box-shadow:0 0 0 2px #2dd4bf33}
+  .node.hl-r{border-color:var(--replica);box-shadow:0 0 0 2px #a78bfa33}
+  .node.down{border-color:#f8717166}
+  .node-head{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+  .node-head strong{display:block}
+  .node-head small{color:var(--muted);font-size:12px}
+  .url{font-family:var(--mono);font-size:11px;color:var(--muted);word-break:break-all;margin:6px 0 10px}
+  .badge{font-size:11px;font-weight:650;padding:2px 8px;border-radius:99px;white-space:nowrap}
+  .b-ok{background:#4ade8022;color:var(--ok)} .b-bad{background:#f8717122;color:var(--bad)} .b-warn{background:#fbbf2422;color:var(--warn)} .b-mute{background:#8c9ab522;color:var(--muted)}
+  .filelist{list-style:none;margin:0;padding:0;display:grid;gap:4px;max-height:180px;overflow:auto}
+  .filelist li{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:4px 6px;background:#0e142066;border-radius:6px}
+  .filelist .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .filelist .sz{color:var(--muted);font-size:11px}
+  .empty{color:var(--muted);font-size:12.5px;padding:6px 2px}
+  .role{font-size:10px;font-weight:700;width:18px;height:18px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;color:#0e1420;flex:none}
+  .role.P{background:var(--primary)} .role.R{background:var(--replica)} .role.X{background:var(--muted)}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin-top:14px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+
+  /* Subida */
+  #drop{border:2px dashed var(--line);border-radius:10px;padding:26px 16px;text-align:center;color:var(--muted);cursor:pointer;transition:.2s}
+  #drop.over,#drop:hover{border-color:var(--primary);color:var(--text);background:#2dd4bf0d}
+  #drop b{color:var(--text)}
+  #result{margin-top:14px;min-height:20px}
+  .route{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px}
+  .chip{padding:5px 12px;border-radius:8px;font-weight:600;font-size:13px;border:1px solid}
+  .chip.p{color:var(--primary);border-color:var(--primary);background:#2dd4bf14}
+  .chip.r{color:var(--replica);border-color:var(--replica);background:#a78bfa14}
+  .arrow{color:var(--muted)}
+  .mono{font-family:var(--mono);font-size:11.5px;color:var(--muted);word-break:break-all}
+  .msg-err{color:var(--bad)}
+
+  /* Tabla */
+  .tbl-wrap{overflow:auto}
+  table{width:100%;border-collapse:collapse;min-width:720px}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600;padding:6px 10px;border-bottom:1px solid var(--line)}
+  td{padding:9px 10px;border-bottom:1px solid #26324a80;vertical-align:middle}
+  tr:last-child td{border-bottom:0}
+  td.name{font-weight:600;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .loc{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
+  .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)} .dot.unk{background:var(--muted)}
+  button{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:5px 12px;cursor:pointer}
+  button:hover{border-color:var(--primary)}
+
+  /* Eventos */
+  #events{list-style:none;margin:0;padding:0;max-height:300px;overflow:auto;display:grid;gap:2px}
+  #events li{display:flex;gap:10px;font-size:12.5px;padding:5px 4px;border-bottom:1px solid #26324a60}
+  #events time{color:var(--muted);font-family:var(--mono);font-size:11.5px;flex:none}
+  .ev{font-size:10px;font-weight:700;text-transform:uppercase;padding:1px 7px;border-radius:5px;flex:none;align-self:flex-start;margin-top:1px}
+  .ev.upload{background:#2dd4bf22;color:var(--primary)} .ev.download{background:#60a5fa22;color:#60a5fa}
+  .ev.failover{background:#fbbf2422;color:var(--warn)} .ev.error{background:#f8717122;color:var(--bad)}
+
+  #toast{position:fixed;right:20px;bottom:20px;max-width:360px;background:var(--panel2);border:1px solid var(--line);border-left:4px solid var(--primary);border-radius:8px;padding:10px 14px;opacity:0;transform:translateY(8px);transition:.25s;pointer-events:none}
+  #toast.show{opacity:1;transform:none}
+  #toast.warn{border-left-color:var(--warn)} #toast.bad{border-left-color:var(--bad)}
+  #conn{font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>📁 Mini Drive Distribuido<small>Coordinador · replicación síncrona k=2 · Round-Robin</small></h1>
+  <div class="stats">
+    <div class="stat"><b id="s-nodes">–</b><span>Nodos activos</span></div>
+    <div class="stat"><b id="s-files">–</b><span>Archivos</span></div>
+    <div class="stat"><b id="s-bytes">–</b><span>Datos lógicos</span></div>
+    <div class="stat"><b id="s-health">–</b><span>Archivos íntegros</span></div>
+  </div>
+  <div id="conn" class="badge b-mute">conectando…</div>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Topología de la red</h2>
+    <div id="topo">
+      <svg id="lines"></svg>
+      <div class="coord" id="coord"><strong>🧠 Coordinador</strong><small id="coord-url"></small></div>
+      <div class="nodes" id="nodes"></div>
+    </div>
+    <div class="legend">
+      <span><i class="role P">P</i> copia principal</span>
+      <span><i class="role R">R</i> réplica</span>
+      <span><i class="role X">?</i> archivo en disco que el catálogo no asigna a este nodo</span>
+    </div>
+  </section>
+
+  <div class="grid2">
+    <section class="card">
+      <h2>Subir archivo</h2>
+      <div id="drop"><b>Arrastra un archivo aquí</b> o haz clic para elegirlo<input id="file" type="file" hidden></div>
+      <div id="result"></div>
+    </section>
+    <section class="card">
+      <h2>Actividad reciente</h2>
+      <ul id="events"><li class="empty">Sin actividad todavía.</li></ul>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Catálogo de archivos</h2>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Archivo</th><th>Tamaño</th><th>Principal</th><th>Réplica</th><th>Estado</th><th>Subido</th><th>SHA-256</th><th></th></tr></thead>
+        <tbody id="rows"><tr><td colspan="8" class="empty">Cargando…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = n => n < 1024 ? n + ' B' : n < 1048576 ? (n/1024).toFixed(1) + ' KB' : n < 1073741824 ? (n/1048576).toFixed(1) + ' MB' : (n/1073741824).toFixed(2) + ' GB';
+const when = iso => { const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString('es-CO', {dateStyle:'short', timeStyle:'medium'}); };
+
+let state = { status: [], files: {}, real: {}, events: [] };
+let highlight = { p: null, r: null, until: 0 };
+
+async function j(url, opts){ const r = await fetch(url, opts); if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText); return r.json(); }
+
+async function refresh(){
+  try {
+    const [st, fl, real, ev] = await Promise.all([j('/status'), j('/files'), j('/nodes/files'), j('/events')]);
+    state = { status: st.nodes, files: fl.files, real: real.nodes, events: ev.events };
+    $('#conn').className = 'badge b-ok'; $('#conn').textContent = '● Coordinador en línea';
+    render();
+  } catch(e){
+    $('#conn').className = 'badge b-bad'; $('#conn').textContent = '● Sin conexión con el coordinador';
+  }
+}
+
+// Estado de integridad de un archivo: cuántas de sus 2 copias están realmente en disco
+function fileHealth(f){
+  const has = id => { const n = state.real[id]; if(!n || !n.reachable) return null; return n.files.some(x => x.filename === f.filename); };
+  const p = has(f.primary_node), r = has(f.replica_node);
+  const copies = [p, r].filter(v => v === true).length, unknown = [p, r].filter(v => v === null).length;
+  let label, cls;
+  if (copies === 2) { label = 'Replicado 2/2'; cls = 'b-ok'; }
+  else if (unknown) { label = copies + '/2 · nodo caído'; cls = 'b-warn'; }
+  else if (copies === 1) { label = 'Degradado 1/2'; cls = 'b-warn'; }
+  else { label = 'Perdido 0/2'; cls = 'b-bad'; }
+  return { p, r, copies, label, cls };
+}
+
+function render(){
+  const files = Object.values(state.files).sort((a,b) => b.created_at.localeCompare(a.created_at));
+  const up = state.status.filter(n => n.status === 'HEALTHY').length;
+  const health = files.map(fileHealth);
+  $('#s-nodes').textContent = up + ' / ' + state.status.length;
+  $('#s-files').textContent = files.length;
+  $('#s-bytes').textContent = fmt(files.reduce((a,f) => a + f.size_bytes, 0));
+  $('#s-health').textContent = files.length ? health.filter(h => h.copies === 2).length + ' / ' + files.length : '–';
+  $('#coord-url').textContent = location.host;
+
+  // Nodos
+  const now = Date.now();
+  $('#nodes').innerHTML = state.status.map(n => {
+    const ok = n.status === 'HEALTHY';
+    const real = state.real[n.node_id];
+    const items = real && real.reachable ? real.files : [];
+    const cls = ['node', ok ? '' : 'down', now < highlight.until && highlight.p === n.node_id ? 'hl-p' : '', now < highlight.until && highlight.r === n.node_id ? 'hl-r' : ''].join(' ');
+    const lis = items.map(it => {
+      const f = state.files[it.filename];
+      const role = f ? (f.primary_node === n.node_id ? 'P' : f.replica_node === n.node_id ? 'R' : 'X') : 'X';
+      return `<li title="${esc(it.filename)}"><i class="role ${role}">${role === 'X' ? '?' : role}</i><span class="nm">${esc(it.filename)}</span><span class="sz">${fmt(it.size_bytes)}</span></li>`;
+    }).join('');
+    return `<div class="${cls}" id="node-${esc(n.node_id)}">
+      <div class="node-head"><div><strong>💾 ${esc(n.node_id)}</strong><small>${esc(n.name)}</small></div>
+        <span class="badge ${ok ? 'b-ok' : 'b-bad'}">${ok ? 'ACTIVO' : 'CAÍDO'}</span></div>
+      <div class="url">${esc(n.url)}</div>
+      ${ok ? (lis ? `<ul class="filelist">${lis}</ul>` : '<div class="empty">Sin archivos almacenados</div>') : '<div class="empty msg-err">No responde. Sus archivos se sirven desde las réplicas.</div>'}
+    </div>`;
+  }).join('');
+
+  // Tabla
+  $('#rows').innerHTML = files.length ? files.map((f, i) => {
+    const h = health[i];
+    return `<tr>
+      <td class="name" title="${esc(f.filename)}">${esc(f.filename)}</td>
+      <td>${fmt(f.size_bytes)}</td>
+      <td><span class="loc"><span class="dot ${h.p === true ? 'ok' : h.p === false ? 'bad' : 'unk'}"></span><span class="chip p" style="padding:2px 9px">${esc(f.primary_node)}</span></span></td>
+      <td><span class="loc"><span class="dot ${h.r === true ? 'ok' : h.r === false ? 'bad' : 'unk'}"></span><span class="chip r" style="padding:2px 9px">${esc(f.replica_node)}</span></span></td>
+      <td><span class="badge ${h.cls}">${h.label}</span></td>
+      <td>${esc(when(f.created_at))}</td>
+      <td class="mono" title="${esc(f.sha256)}">${esc(f.sha256.slice(0, 12))}…</td>
+      <td><button data-dl="${esc(f.filename)}">Descargar</button></td></tr>`;
+  }).join('') : '<tr><td colspan="8" class="empty">Aún no hay archivos. Sube el primero 👆</td></tr>';
+
+  // Eventos
+  $('#events').innerHTML = state.events.length ? state.events.map(e =>
+    `<li><time>${esc(e.time.slice(11))}</time><span class="ev ${esc(e.type)}">${esc(e.type)}</span><span>${esc(e.message)}</span></li>`).join('')
+    : '<li class="empty">Sin actividad todavía.</li>';
+
+  drawLines();
+}
+
+// Líneas coordinador → nodos
+function drawLines(){
+  const topo = $('#topo').getBoundingClientRect(), c = $('#coord').getBoundingClientRect();
+  const x1 = c.left + c.width/2 - topo.left, y1 = c.bottom - topo.top;
+  const now = Date.now(); let out = '';
+  state.status.forEach(n => {
+    const el = $('#node-' + n.node_id); if(!el) return;
+    const r = el.getBoundingClientRect();
+    const x2 = r.left + r.width/2 - topo.left, y2 = r.top - topo.top, my = (y1 + y2)/2;
+    const hlp = now < highlight.until && highlight.p === n.node_id, hlr = now < highlight.until && highlight.r === n.node_id;
+    const color = n.status !== 'HEALTHY' ? '#f87171' : hlp ? '#2dd4bf' : hlr ? '#a78bfa' : '#3a4a6a';
+    const dash = n.status !== 'HEALTHY' ? '5 5' : hlr ? '7 5' : '';
+    out += `<path d="M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2}" fill="none" stroke="${color}" stroke-width="${hlp||hlr ? 3 : 2}" ${dash ? `stroke-dasharray="${dash}"` : ''}/>`;
+  });
+  $('#lines').innerHTML = out;
+}
+addEventListener('resize', drawLines);
+
+// Subida
+async function upload(file){
+  const box = $('#result');
+  box.innerHTML = `<span class="mono">Subiendo ${esc(file.name)} (${fmt(file.size)})…</span>`;
+  const fd = new FormData(); fd.append('file', file);
+  try {
+    const r = await j('/upload', { method:'POST', body: fd });
+    highlight = { p: r.locations.primary, r: r.locations.replica, until: Date.now() + 15000 };
+    box.innerHTML = `<div><b>✔ ${esc(r.filename)}</b> · ${fmt(r.size_bytes)} · <span class="badge b-ok">${esc(r.status)}</span></div>
+      <div class="route"><span class="chip" style="color:var(--text);border-color:var(--line)">Coordinador</span><span class="arrow">→</span>
+      <span class="chip p">${esc(r.locations.primary)} · principal</span><span class="arrow">+</span>
+      <span class="chip r">${esc(r.locations.replica)} · réplica</span></div>
+      <div class="mono" style="margin-top:8px">sha256 ${esc(r.sha256)}</div>`;
+    toast(`Guardado en ${r.locations.primary} y replicado en ${r.locations.replica}`);
+    setTimeout(refresh, 15200);
+  } catch(e){
+    box.innerHTML = `<span class="msg-err">✖ ${esc(e.message)}</span>`;
+    toast(e.message, 'bad');
+  }
+  refresh();
+}
+const drop = $('#drop'), input = $('#file');
+drop.onclick = () => input.click();
+input.onchange = () => { if(input.files[0]) upload(input.files[0]); input.value = ''; };
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); if(e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); };
+
+// Descarga (lee quién sirvió el archivo)
+document.addEventListener('click', async e => {
+  const name = e.target.dataset && e.target.dataset.dl; if(!name) return;
+  try {
+    const r = await fetch('/download/' + encodeURIComponent(name));
+    if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText);
+    const by = r.headers.get('X-Served-By'), fo = r.headers.get('X-Failover') === 'true';
+    const blob = await r.blob(), a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name; a.click(); URL.revokeObjectURL(a.href);
+    toast(fo ? `⚠ Failover: el principal no respondió, servido por la réplica ${by}` : `Servido por ${by} (principal)`, fo ? 'warn' : '');
+  } catch(err){ toast(err.message, 'bad'); }
+  refresh();
+});
+
+let tt; function toast(msg, kind=''){ const t = $('#toast'); t.textContent = msg; t.className = 'show ' + kind; clearTimeout(tt); tt = setTimeout(() => t.className = '', 5000); }
+
+refresh(); setInterval(refresh, 4000);
+</script>
+</body>
+</html>
