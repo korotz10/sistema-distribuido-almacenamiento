@@ -1,227 +1,235 @@
-# Mini Drive Distribuido
+```markdown
+# 📁 Mini Drive Distribuido
 
-Primer laboratorio de Sistemas Distribuidos (IS893), Universidad Tecnológica de Pereira. Grupo de cuatro integrantes.
+Un sistema distribuido de almacenamiento y replicación de archivos en red basado en el patrón **Coordinador-Trabajadores (Master-Worker)**, desarrollado con **Python 3**, **FastAPI**, **HTTPX** y desplegado sobre una red privada virtual Mesh con **Tailscale**.
 
-El servicio permite **subir, listar y descargar archivos** desde un coordinador. Este reparte los archivos entre tres nodos, guarda dos copias y utiliza la réplica cuando falla la copia principal. El alcance está ajustado al *Taller Parcial – Laboratorio Sistemas Distribuidos, octubre de 2026*.
+---
 
-**La demostración evaluada debe ejecutarse en cuatro computadores independientes, con IP distintas.** Las pruebas en localhost incluidas aquí sirven para desarrollar y verificar el código; no sustituyen esa entrega.
+## 🚀 1. Propósito del Proyecto
 
-## Arquitectura y distribución del trabajo
+El almacenamiento centralizado en un único servidor genera un punto único de falla (*Single Point of Failure - SPOF*). Este proyecto resuelve dicho problema ofreciendo un servicio de almacenamiento unificado que abstrae la ubicación física de los archivos mediante:
 
-```mermaid
-flowchart TD
-    Usuario["Usuario · una URL del servicio"] -->|HTTP| A["Host A · Coordinador<br/>IP: por confirmar · puerto 8000<br/>Catálogo y elección de nodos"]
-    A --> Catalogo[("catalog.json · metadatos")]
-    A <-->|HTTP| B["Host B · node1<br/>100.121.209.117:8001<br/>Guardar y recuperar archivos"]
-    A <-->|HTTP| C["Host C · node2<br/>100.90.207.18:8002<br/>Guardar y recuperar archivos"]
-    A <-->|HTTP| D["Host D · node3<br/>100.98.240.121:8003<br/>Guardar y recuperar archivos"]
-    B --> SB[("storage/ · disco B")]
-    C --> SC[("storage/ · disco C")]
-    D --> SD[("storage/ · disco D")]
-```
+- **Transparencia de Ubicación:** El cliente interactúa únicamente con el Coordinador; no necesita conocer qué nodos existen ni dónde se almacenan físicamente los bytes.
+- **Replicación Síncrona ($k=2$):** Cada archivo se guarda simultáneamente en dos nodos físicos independientes antes de confirmar la subida.
+- **Tolerancia a Fallos y Failover Transparente:** Si el nodo principal cae o pierde conectividad, el sistema redirige la descarga a la réplica sin interrumpir al usuario ni retornar error.
 
-Las IP de nodos proceden de la configuración existente de Tailscale; su conectividad debe comprobarse en los equipos. Complete la IP del coordinador y el inventario de [la demostración](docs/DEMOSTRACION.md) antes de entregar.
+---
 
-| Componente | Responsabilidad |
-| --- | --- |
-| Coordinador | Recibir peticiones del cliente, elegir dos nodos, comprobar sus respuestas y registrar ubicaciones. |
-| Cada nodo | Guardar una copia en su disco y entregarla por HTTP cuando se solicita. |
-| Catálogo JSON | Relacionar nombre visible, identificador físico, tamaño, SHA-256 y ubicaciones. |
-| Cliente | Utilizar la URL del coordinador sin elegir el nodo físico. Swagger UI permite hacerlo desde el navegador. |
+## 🛠️ 2. Arquitectura del Sistema
 
-## Decisiones del laboratorio
-
-- Python y FastAPI para las API; HTTPX para las solicitudes entre procesos.
-- HTTP/REST sobre LAN o Tailscale, permitido por la guía.
-- Selección por turnos (*round-robin*): con todos activos, los pares son `node1–node2`, `node2–node3` y `node3–node1`.
-- Dos copias antes de confirmar una subida; si un nodo falla, se intenta el siguiente.
-- Descarga desde el principal y, si falla o entrega contenido incorrecto, desde la réplica.
-- Catálogo JSON escrito mediante un temporal y sustitución al terminar, para evitar truncar el catálogo anterior.
-- Un proceso coordinador y un proceso por nodo. El coordinador procesa una subida a la vez mediante un bloqueo local.
-- Archivos de hasta 10 MiB por defecto. Las operaciones usan memoria; el límite mantiene sencilla la implementación.
-- Nombres repetidos: `409`. Para un archivo nuevo, utilice otro nombre; esta versión no administra actualizaciones ni versiones.
-- Sin autenticación, reparación de réplicas, auditorías periódicas ni tareas de mantenimiento.
-
-Estas decisiones de implementación no son exigencias adicionales del profesor. Su justificación y la correspondencia con cada requisito están en [ALCANCE_LABORATORIO.md](docs/ALCANCE_LABORATORIO.md).
-
-## Estructura
+El sistema adopta una arquitectura desacoplada **Master-Worker** dividida en dos planos de operación:
 
 ```text
-common/
-  config.py                 Configuración por variables de entorno
-  files.py                  Validación, tamaño, hash y escritura con temporal
-  schemas.py                Respuestas documentadas de la API
-coordinator/
-  catalog.py                Catálogo JSON y turno de distribución
-  main.py                   Subir, listar, descargar y consultar estado
-  services.py               Solicitudes HTTP a los nodos
-node/
-  main.py                   Arranque del servidor del nodo
-  router.py                 Guardar y recuperar objetos del disco
-scripts/
-  test_connectivity.py      Consulta HTTP a coordinador y nodos
-  migrate_catalog.py        Exportación opcional del SQLite anterior a JSON
-tests/
-  test_system.py            Pruebas aisladas de funcionamiento
-  smoke_http.py             Cuatro procesos HTTP temporales
-docs/
-  ALCANCE_LABORATORIO.md     Análisis de la guía y simplificación
-  DEMOSTRACION.md            Inventario y guion de evidencias en cuatro hosts
-storage/                    Datos del nodo; excluidos de Git
-.env.example                Plantilla; no se carga automáticamente
-requirements.txt            Dependencias directas
+               +----------------------------------+
+               |        CLIENTE / NAVEGADOR       |
+               +----------------+-----------------+
+                                |
+                   (HTTP / REST - Puerto 8000)
+                                v
+               +----------------------------------+
+               |     COORDINADOR (Host A)         |
+               |   - Plano de Control             |
+               |   - Catálogo de Metadatos        |
+               |   - Algoritmo Round-Robin        |
+               +----------------+-----------------+
+                                |
+        +-----------------------+-----------------------+
+        | (HTTPX / REST)        | (HTTPX / REST)        | (HTTPX / REST)
+        v                       v                       v
++---------------+       +---------------+       +---------------+
+| NODO 1 (Host B)|      | NODO 2 (Host C)|      | NODO 3 (Host D)|
+| Puerto 8001   |      | Puerto 8002   |      | Puerto 8003   |
+| ./storage/    |      | ./storage/    |      | ./storage/    |
++---------------+       +---------------+       +---------------+
+
 ```
 
-Los paquetes `common`, `coordinator` y `node` incluyen `__init__.py`. Los documentos `DIAGNOSTICO.md`, `CORRECCIONES.md` y `LIMPIEZA.md` dentro de `docs/` se conservan como historial de las revisiones anteriores.
+### Componentes:
 
-## Instalación
+1. **Coordinador (Plano de Control - Host A):** Punto de entrada unificado. Mantiene el catálogo en `catalog.json`, aplica la rotación Round-Robin, gestiona la replicación síncrona y coordina el failover.
+2. **Nodos de Almacenamiento (Plano de Datos - Hosts B, C, D):** Servicios independientes y sin estado (*stateless*) encargados exclusivamente de guardar y leer los bytes físicos en sus directorios locales (`./storage/`).
 
-Python 3.12 es el entorno de referencia. La versión simplificada también se probó con Python 3.14.2 en Windows.
+---
 
-En cada computador, desde la raíz del repositorio:
+## 👥 3. Inventario de Infraestructura
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+| Host | Responsable | Rol en la Arquitectura | IP (Tailscale) | Puerto | Estado |
+| --- | --- | --- | --- | --- | --- |
+| **A** | Santiago | Coordinador / Servidor Central | `100.116.61.8` | `8000` | Activo |
+| **B** | Ivanna | Nodo 1 (Almacenamiento) | `100.x.x.2` | `8001` | Activo |
+| **C** | Dayana | Nodo 2 (Almacenamiento) | `100.90.207.18` | `8002` | Activo |
+| **D** | Victor | Nodo 3 (Almacenamiento) | `100.x.x.4` | `8003` | Activo |
+
+---
+
+## 📂 4. Estructura del Código Fuente
+
+El código está estrictamente organizado por componentes:
+
+```text
+sistema-distribuido-almacenamiento/
+│
+├── coordinator/               # 🧠 COMPONENTE COORDINADOR (Host A)
+│   ├── __init__.py
+│   ├── catalog.py             # Persistencia y gestión del catálogo catalog.json
+│   ├── main.py                # Endpoints públicos FastAPI (Puerto 8000)
+│   └── services.py            # Round-Robin, Replicación Síncrona y Failover
+│
+├── node/                      # 💾 COMPONENTE NODOS TRABAJADORES (Hosts B, C, D)
+│   ├── __init__.py
+│   ├── main.py                # Punto de entrada del proceso del Nodo
+│   └── router.py              # Endpoints internos (/health, /store, /retrieve)
+│
+├── common/                    # 🛠️ MÓDULO DE CONFIGURACIÓN COMPARTIDO
+│   ├── __init__.py
+│   ├── config.py              # IPs de Tailscale, puertos y timeouts
+│   └── schemas.py             # Modelos de validación Pydantic
+│
+├── storage/                   # 📁 ALMACENAMIENTO FÍSICO DE ARCHIVOS
+│   └── .gitkeep               # Directorio local de persistencia
+│
+├── scripts/                   # 🧪 SCRIPTS AUXILIARES DE PRUEBA
+│   └── test_connectivity.py   # Diagnóstico rápido de red
+│
+├── catalog.json               # Catálogo central de metadatos (Coordinador)
+├── requirements.txt           # Dependencias de Python
+├── .gitignore
+└── README.md                  # Documentación principal del sistema
+
 ```
 
-Si ya existe `venv`, active `.\venv\Scripts\Activate.ps1`. Hay un solo archivo de dependencias: fija las cuatro bibliotecas directas; sus dependencias indirectas las resuelve pip.
+---
 
-## Ejecución en los cuatro equipos
+## ⚙️ 5. Instalación y Configuración
 
-En cada terminal, active el entorno virtual. Mantenga el mismo código en los cuatro equipos y configure las IP accesibles de los nodos en el coordinador.
+### Requisitos Previos
 
-**Host B — node1:**
+* Python 3.9 o superior.
+* Tailscale instalado y activo en los 4 computadores.
 
-```powershell
-$env:NODE_ID="node1"
-$env:NODE_PORT="8001"
-python -m node.main
+### 1. Clonar el repositorio e instalar dependencias
+
+```bash
+# Clonar repositorio
+git clone <URL_DEL_REPOSITORIO>
+cd sistema-distribuido-almacenamiento
+
+# Crear entorno virtual
+python -m venv venv
+
+# Activar entorno virtual
+# En Windows (PowerShell):
+.\venv\Scripts\Activate.ps1
+# En Linux / macOS:
+source venv/bin/activate
+
+# Instalar librerías requeridas
+pip install -r requirements.txt
+
 ```
 
-**Host C — node2:**
+---
+
+## 🚀 6. Guía de Ejecución
+
+### Opción A: Ejecutar un Nodo de Almacenamiento (Ivanna, Dayana, Victor)
+
+Cada integrante ejecuta en su computador el servicio del nodo indicando su `NODE_ID` y `NODE_PORT`:
+
+**En Windows (PowerShell):**
 
 ```powershell
-$env:NODE_ID="node2"
-$env:NODE_PORT="8002"
-python -m node.main
+# Nodo 1 (Ivanna)
+$env:NODE_ID="node1"; $env:NODE_PORT="8001"; python -m node.main
+
+# Nodo 2 (Dayana)
+$env:NODE_ID="node2"; $env:NODE_PORT="8002"; python -m node.main
+
+# Nodo 3 (Victor)
+$env:NODE_ID="node3"; $env:NODE_PORT="8003"; python -m node.main
+
 ```
 
-**Host D — node3:**
+**En Linux / macOS:**
 
-```powershell
-$env:NODE_ID="node3"
-$env:NODE_PORT="8003"
-python -m node.main
+```bash
+NODE_ID=node1 NODE_PORT=8001 python -m node.main
+
 ```
 
-**Host A — coordinador:**
+### Opción B: Ejecutar el Coordinador (Santiago)
+
+En el Host A, se inicia el servidor maestro en el puerto 8000:
 
 ```powershell
-$env:NODE1_URL="http://100.121.209.117:8001"
-$env:NODE2_URL="http://100.90.207.18:8002"
-$env:NODE3_URL="http://100.98.240.121:8003"
 python -m coordinator.main
+
 ```
 
-Sustituya esas direcciones si cambiaron en su red. El coordinador escucha en el puerto 8000. Desde el navegador de cualquier equipo que tenga acceso, abra `http://IP_COORDINADOR:8000/docs`.
+---
 
-Cada nodo utiliza su propio `storage/`. La pequeña identidad `.node.json` evita asignar accidentalmente ese directorio a otro `NODE_ID`. Si ya tiene datos, conserve el mismo identificador y directorio.
+## 🖥️ Interfaz Web
 
-## Uso
+Con el Coordinador en ejecución, abre `http://<IP-del-coordinador>:8000/ui` en el navegador. Muestra:
 
-Puede realizar las operaciones desde Swagger UI o desde PowerShell:
+- **Topología:** estado de cada nodo (activo/caído), su dirección, desde cuándo está conectado y su última respuesta; botón **Consultar estado** y los archivos que tiene realmente en disco, marcados como **P** (principal) o **R** (réplica).
+- **Subida:** al subir un archivo se ve a qué nodo fue como principal y dónde quedó la réplica.
+- **Catálogo:** cada archivo con sus dos ubicaciones y su integridad (2/2, degradado, perdido).
+- **Descarga:** informa qué nodo sirvió el archivo y si hubo **failover**.
+- **Actividad:** bitácora de subidas, descargas, failovers y errores.
 
-```powershell
-$base="http://IP_COORDINADOR:8000"
-curl.exe -F "file=@./informe.pdf" "$base/upload"
-curl.exe "$base/files"
-curl.exe -D "./cabeceras.txt" -o "./descargado.pdf" "$base/download/informe.pdf"
-curl.exe "$base/status"
-```
+Endpoints añadidos: `GET /events`, `GET /nodes/files`, `GET /catalog` (coordinador) y `GET /files` (nodo).
 
-Sustituya `IP_COORDINADOR` y use un archivo que exista. La descarga incluye `X-Storage-Node`, que identifica el nodo que entregó el contenido y permite evidenciar el cambio a la réplica.
+---
 
-### API del coordinador
+## 📡 7. Contrato de API (Endpoints)
 
-| Método | Ruta | Resultado |
-| --- | --- | --- |
-| GET | `/health` | Comprueba el coordinador y la lectura del catálogo. |
-| POST | `/upload` | Multipart con `file`; responde `201` después de confirmar dos copias. |
-| GET | `/files` | Lista metadatos y ubicaciones registradas. |
-| GET | `/download/{filename}` | Recupera una copia válida y responde `200`. |
-| GET | `/status` | Sondea los nodos e informa `UP` o `DOWN`. |
+### Endpoints Públicos del Coordinador (`http://100.116.61.8:8000`)
 
-### API de cada nodo
+| Método | Ruta | Descripción | Respuesta Esperada |
+| --- | --- | --- | --- |
+| `POST` | `/upload` | Subida de archivo con Round-Robin y replicación $k=2$ | `201 Created` |
+| `GET` | `/download/{filename}` | Descarga con failover transparente ante caídas | `200 OK` (Stream de bytes) |
+| `GET` | `/files` | Lista del catálogo completo y ubicaciones físicas | `200 OK` (JSON) |
+| `GET` | `/status` | Diagnóstico de salud de todos los nodos | `200 OK` (JSON) |
 
-| Método | Ruta | Resultado |
-| --- | --- | --- |
-| GET | `/health` | Identidad, ruta de almacenamiento y cantidad de objetos. |
-| POST | `/store` | Guarda el objeto recibido y devuelve tamaño y hash. |
-| GET | `/retrieve/{filename}` | Recupera el objeto físico del disco. |
+### Endpoints Internos de los Nodos (Puertos `8001`, `8002`, `8003`)
 
-El nombre visible del cliente puede ser `informe.pdf`, mientras el archivo físico es un identificador como `a73f...`. Esa relación aparece en `/files`, campo `storage_key`. Se usa un identificador nuevo por intento para evitar que una subida fallida altere otro archivo. El contenido guardado es el original, sin cifrado ni transformación.
+| Método | Ruta | Descripción | Respuesta Esperada |
+| --- | --- | --- | --- |
+| `GET` | `/health` | Estado de salud y cantidad de archivos almacenados | `200 OK` |
+| `POST` | `/store` | Guarda bytes en disco local (`./storage/`) atómicamente | `201 Created` |
+| `GET` | `/retrieve/{filename}` | Retorna bytes del archivo desde el disco local | `200 OK` / `404 Not Found` |
 
-Los errores principales son `400` (nombre inválido), `404` (archivo ausente), `409` (nombre repetido), `413` (tamaño excesivo), `422` (formulario incompleto) y `503` (catálogo o copias disponibles insuficientes). Codifique los nombres con espacios, `#`, `%` o Unicode al construir una URL.
+---
 
-## Configuración
+## 🧪 8. Plan de Pruebas y Verificación (Bitácora)
 
-Las variables se leen al arrancar cada proceso; `.env.example` no se importa automáticamente.
+Para verificar el correcto funcionamiento del sistema distribuido:
 
-| Variable | Predeterminado | Uso |
-| --- | --- | --- |
-| `NODE_ID` | `node1` | Identificador del nodo. |
-| `NODE_HOST` / `NODE_PORT` | `0.0.0.0` / `8001` | Interfaz y puerto del nodo. |
-| `STORAGE_DIR` | `<raíz>/storage` | Directorio de datos del nodo. |
-| `COORDINATOR_HOST` / `COORDINATOR_PORT` | `0.0.0.0` / `8000` | Interfaz y puerto del coordinador. |
-| `NODE1_URL`, `NODE2_URL`, `NODE3_URL` | Direcciones de `common/config.py` | Ubicaciones HTTP de los nodos. |
-| `CATALOG_FILE` | `<raíz>/catalog.json` | Catálogo del coordinador. |
-| `MAX_FILE_SIZE` | `10485760` | Máximo por archivo: 10 MiB; mismo valor en los cuatro procesos. |
-| `COORDINATOR_URL` | `http://127.0.0.1:8000` con el puerto configurado | URL que consulta el script de conectividad. |
+### 1. Prueba P01 - Conectividad de Red
 
-Los tiempos de conexión y de espera de datos son 3 y 10 segundos, respectivamente. No representan un plazo total para toda la operación.
-
-## Catálogo y actualización desde la versión anterior
-
-El catálogo JSON se crea automáticamente. Un JSON dañado produce un error y se conserva para corregirlo; no se reemplaza por un catálogo vacío. Los JSON originales sin `storage_key` siguen utilizando sus nombres físicos anteriores.
-
-Si llegó a utilizar la versión SQLite, detenga los procesos de esa versión y exporte antes de iniciar el nuevo coordinador:
+Ejecutar el script de diagnóstico para validar la red Mesh de Tailscale:
 
 ```powershell
-python scripts/migrate_catalog.py ./catalog.sqlite3 ./catalog.json
-```
-
-La exportación es de solo lectura sobre SQLite y rechaza un destino existente. Conserva los identificadores y ubicaciones de los archivos publicados. Si hay un JSON anterior, elija un destino nuevo y configure `CATALOG_FILE` con esa ruta; no sobrescriba los catálogos.
-
-Las antiguas operaciones pendientes y las colas de limpieza no se importan. Las carpetas `.locks` y `.deleted` de una instalación anterior dejan de utilizarse; la nueva versión no las crea ni las elimina. `.node.json` sigue identificando el directorio.
-
-Para respaldar esta versión, detenga el coordinador y copie `catalog.json`; respalde también los directorios de los nodos si necesita conservar los archivos.
-
-## Verificación
-
-```powershell
-python -m unittest discover -s tests -v
-python tests/smoke_http.py
 python scripts/test_connectivity.py
+
 ```
 
-Las **34 pruebas** utilizan directorios temporales y comprueban distribución, réplicas reales, fallos, hashes, persistencia, nombres duplicados, concurrencia básica, límites y compatibilidad de catálogos.
+### 2. Prueba P02 - Distribución y Replicación
 
-La prueba HTTP inicia tres nodos y un coordinador en puertos locales libres. Verifica los archivos físicos, detiene un nodo, descarga desde la réplica, detiene el coordinador, comprueba el acceso directo al nodo y reinicia el servicio con el mismo JSON. Al terminar cierra sus procesos y elimina sus datos.
+Abre en el navegador `http://localhost:8000/docs` e interactúa con el endpoint `POST /upload`. Sube tres archivos consecutivos y verifica que el catálogo `catalog.json` distribuya los archivos rotativamente entre los nodos.
 
-El script de conectividad consulta procesos reales: ejecútelo con las URL del despliegue. Devuelve `0` si todos responden y `1` si alguno falla. Desde otro equipo, configure primero `COORDINATOR_URL` con la IP del coordinador.
+### 3. Prueba P03 - Verificación Física
 
-En Python 3.14, la combinación de dependencias existente muestra avisos de deprecación y de recursos internos de TestClient/AnyIO durante la suite. Las aserciones y la prueba HTTP se revisan por separado; esos avisos no acreditan ni invalidan la conectividad entre los cuatro equipos.
+Revisa los directorios `./storage/` en los equipos de los nodos para corroborar que los archivos binarios existan físicamente.
 
-## Límites que deben explicarse
+### 4. Prueba P04 - Tolerancia a Fallos (Failover)
 
-- Un proceso coordinador por catálogo y un proceso por directorio de nodo. El bloqueo local no coordina varios procesos ni varios coordinadores.
-- El coordinador es un punto único de fallo: sin él, subir, listar y descargar por la URL pública deja de funcionar. Los nodos conservan los objetos y pueden entregarlos directamente si se conoce su identificador.
-- Una subida necesita dos copias confirmadas; una descarga necesita una de las dos copias registrada en el catálogo.
-- Si una subida falla después de guardar una copia, esa copia puede quedar sin registrar. No se publica como disponible y un nuevo intento usa otro identificador. La limpieza automática queda fuera del laboratorio.
-- Los nombres existentes se rechazan. No hay borrado público, versiones, reparación, elección de líder ni catálogo replicado.
-- El procesamiento secuencial y el uso de memoria son adecuados para archivos pequeños y pocas peticiones; no se ofrecen garantías de rendimiento, alta carga o recuperación ante cortes eléctricos.
-- `UP` comprueba la respuesta del nodo; `COMMITTED` indica una publicación previa. El hash se verifica al descargar. Ninguno de esos estados significa que todas las copias sigan íntegras para siempre.
+1. Detén el servicio en el **Nodo 1** (presionando `Ctrl + C` en su terminal).
+2. Solicita la descarga mediante `GET /download/{filename}` de un archivo cuyo nodo principal era el **Nodo 1**.
+3. Observa cómo el Coordinador redirige la petición hacia la réplica en el **Nodo 2** y entrega el archivo exitosamente.
 
-El inventario, las evidencias pendientes y las preguntas de sustentación están en [DEMOSTRACION.md](docs/DEMOSTRACION.md).
+### 5. Prueba P05 - Análisis de Punto Único de Fallo (SPOF)
+
+Detén el proceso del Coordinador manteniendo activos los nodos. Demuestra que la interfaz pública deja de responder (Single Point of Failure), aunque la información permanezca intacta en las carpetas `./storage/` de los nodos.
