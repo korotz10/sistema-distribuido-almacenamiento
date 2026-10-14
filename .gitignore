@@ -2,10 +2,20 @@
 storage/*
 !storage/.gitkeep
 *.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+/catalog.json
+/backups/
 
 # Python
 __pycache__/
 *.pyc
 .env
+.env.*
+!.env.example
 venv/
 .venv/
+
+# Preferencias locales del editor
+.vscode/

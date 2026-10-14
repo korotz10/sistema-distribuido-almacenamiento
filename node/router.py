@@ -1,124 +1,78 @@
-"""
-Endpoints internos del nodo: /health, /store, /retrieve/{filename}
-Atiende las solicitudes enviadas únicamente por el Coordinador a través de Tailscale.
-"""
-import hashlib
-import os
+"""Tres operaciones del nodo: salud, almacenamiento y recuperación."""
+import json
 from pathlib import Path
-from typing import Optional
+from threading import Lock
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-# Importamos los modelos Pydantic centralizados
-from common.schemas import HealthResponse, StoreResponse
-
-# 1. Configuración del Nodo desde variables de entorno
-NODE_ID = os.getenv("NODE_ID", "node1")
-NODE_PORT = int(os.getenv("NODE_PORT", "8001"))
-
-# Definir y crear carpeta de almacenamiento local ./storage/
-BASE_DIR = Path(__file__).resolve().parent.parent
-STORAGE_DIR = Path(os.getenv("STORAGE_DIR", BASE_DIR / "storage")).resolve()
-STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-
-# Tamaño de bloque para lectura en RAM (1 MB)
-CHUNK_SIZE = 1024 * 1024
-
-router = APIRouter()
+from common.files import atomic_write, read_upload, sha256, validate_filename
 
 
-def safe_path(filename: str) -> Path:
-    """
-    Valida el nombre del archivo y retorna una ruta segura dentro de ./storage/
-    Previene ataques de tipo Path Traversal (ej. ../../archivo).
-    """
-    if not filename or filename != Path(filename).name or "\\" in filename or "/" in filename:
-        raise HTTPException(status_code=400, detail="Nombre de archivo no válido")
-    if filename.startswith("."):
-        raise HTTPException(status_code=400, detail="Nombre de archivo reservado o no válido")
+class NodeStorage:
+    def __init__(self, directory: Path, node_id: str):
+        self.directory = Path(directory).resolve()
+        self.node_id = node_id
+        self.lock = Lock()
+        self.directory.mkdir(parents=True, exist_ok=True)
+        identity_path = self.directory / ".node.json"
+        if identity_path.exists():
+            identity = json.loads(identity_path.read_text(encoding="utf-8"))
+            if identity["node_id"] != node_id:
+                raise RuntimeError("STORAGE_DIR pertenece a otro NODE_ID; usa un directorio distinto")
+        else:
+            identity = {"node_id": node_id, "storage_id": uuid4().hex}
+            atomic_write(identity_path, json.dumps(identity).encode("utf-8"))
+        self.storage_id = identity["storage_id"]
 
-    destination_path = (STORAGE_DIR / filename).resolve()
+    def path(self, filename):
+        validate_filename(filename)
+        path = self.directory / filename
+        if path.is_symlink() or path.resolve().parent != self.directory:
+            raise HTTPException(400, "Ruta de almacenamiento no válida")
+        return path
 
-    # Verificar que el archivo final quede estrictamente dentro de STORAGE_DIR
-    if destination_path.parent != STORAGE_DIR:
-        raise HTTPException(status_code=400, detail="Ruta de almacenamiento no autorizada")
+    def health(self):
+        return {"status": "ok", "node_id": self.node_id, "storage_id": self.storage_id,
+                "storage_dir": str(self.directory),
+                "files_stored": sum(p.is_file() and not p.name.startswith(".") for p in self.directory.iterdir())}
 
-    return destination_path
+    def store(self, filename, content):
+        path = self.path(filename)
+        with self.lock:
+            if path.exists():
+                if path.read_bytes() != content:
+                    raise HTTPException(409, "El objeto ya existe con otro contenido")
+            else:
+                atomic_write(path, content)
+        return {"status": "stored", "node_id": self.node_id, "storage_id": self.storage_id,
+                "filename": filename, "size_bytes": len(content), "sha256": sha256(content)}
 
-
-@router.get("/health", response_model=HealthResponse, tags=["Monitoreo"])
-async def health():
-    """
-    Endpoint de diagnóstico usado por el Coordinador para verificar si el nodo está vivo.
-    """
-    files_count = sum(1 for p in STORAGE_DIR.iterdir() if p.is_file() and not p.name.startswith("."))
-    return {
-        "status": "ok",
-        "node_id": NODE_ID,
-        "files_stored": files_count,
-    }
-
-
-@router.post("/store", status_code=201, response_model=StoreResponse, tags=["Almacenamiento"])
-async def store(
-    file: UploadFile = File(...),
-    filename: Optional[str] = Form(None),
-):
-    """
-    Recibe los bytes de un archivo enviado por el Coordinador y los guarda en ./storage/
-    Utiliza escritura atómica con archivo temporal (.tmp).
-    """
-    target_name = filename or file.filename
-    if not target_name:
-        raise HTTPException(status_code=400, detail="El archivo no tiene un nombre válido")
-
-    dest_path = safe_path(target_name)
-    temp_path = dest_path.with_name(f".{dest_path.name}.{uuid4().hex}.tmp")
-
-    sha256 = hashlib.sha256()
-    size_bytes = 0
-
-    try:
-        with open(temp_path, "wb") as out_file:
-            while chunk := await file.read(CHUNK_SIZE):
-                out_file.write(chunk)
-                sha256.update(chunk)
-                size_bytes += len(chunk)
-
-            out_file.flush()
-            os.fsync(out_file.fileno())
-
-        # Renombrado atómico: del temporal al archivo final
-        os.replace(temp_path, dest_path)
-
-    except Exception as exc:
-        if temp_path.exists():
-            temp_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"Error escribiendo en disco local: {str(exc)}")
-
-    return {
-        "status": "stored",
-        "node_id": NODE_ID,
-        "filename": dest_path.name,
-        "size_bytes": size_bytes,
-        "sha256": sha256.hexdigest(),
-    }
+    def retrieve(self, filename):
+        path = self.path(filename)
+        if not path.is_file():
+            raise HTTPException(404, "Archivo no encontrado en este nodo")
+        return path
 
 
-@router.get("/retrieve/{filename}", tags=["Almacenamiento"])
-async def retrieve(filename: str):
-    """
-    Retorna el flujo de bytes del archivo guardado en el disco del nodo.
-    """
-    target_path = safe_path(filename)
+def create_router(storage):
+    router = APIRouter()
 
-    if not target_path.is_file():
-        raise HTTPException(status_code=404, detail="El archivo no existe en este nodo")
+    @router.get("/health")
+    def health():
+        return storage.health()
 
-    return FileResponse(
-        path=target_path,
-        media_type="application/octet-stream",
-        filename=target_path.name,
-    )
+    @router.post("/store", status_code=201)
+    def store(file: UploadFile = File(...), filename: str | None = Form(None)):
+        try:
+            key = validate_filename(filename or file.filename or "")
+            return storage.store(key, read_upload(file.file))
+        finally:
+            file.file.close()
+
+    @router.get("/retrieve/{filename}")
+    def retrieve(filename: str):
+        return FileResponse(storage.retrieve(filename), filename=filename, media_type="application/octet-stream")
+
+    return router
