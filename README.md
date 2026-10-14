@@ -1,303 +1,235 @@
 ```markdown
-# Nodo de Almacenamiento
+# 📁 Mini Drive Distribuido
 
-Componente `node/` del **Sistema Distribuido de Almacenamiento (Mini Drive Distribuido)**[cite: 6].
-
-Este README explica la responsabilidad del nodo, su arquitectura interna, cómo configurarlo, cómo ejecutarlo y la guía de pruebas paso a paso[cite: 8].
+Un sistema distribuido de almacenamiento y replicación de archivos en red basado en el patrón **Coordinador-Trabajadores (Master-Worker)**, desarrollado con **Python 3**, **FastAPI**, **HTTPX** y desplegado sobre una red privada virtual Mesh con **Tailscale**.
 
 ---
 
-## 1. Qué es y qué hace
+## 🚀 1. Propósito del Proyecto
 
-Un nodo es un servicio web construido con **FastAPI** que cumple el rol de **trabajador (*worker*)** dentro de la arquitectura Coordinador-Trabajadores[cite: 6, 8, 20]. Su responsabilidad es deliberadamente acotada[cite: 8]:
+El almacenamiento centralizado en un único servidor genera un punto único de falla (*Single Point of Failure - SPOF*). Este proyecto resuelve dicho problema ofreciendo un servicio de almacenamiento unificado que abstrae la ubicación física de los archivos mediante:
 
-- **Guardar** archivos binarios en el disco local (`./storage/`) mediante escrituras atómicas cuando el Coordinador se lo solicita[cite: 8, 9, 14].
-- **Devolver** la secuencia de bytes de los archivos cuando el Coordinador los requiere[cite: 8, 12, 14].
-- **Informar** su estado de salud (`/health`) para que el Coordinador detecte caídas o desconexiones[cite: 10, 14].
+- **Transparencia de Ubicación:** El cliente interactúa únicamente con el Coordinador; no necesita conocer qué nodos existen ni dónde se almacenan físicamente los bytes.
+- **Replicación Síncrona ($k=2$):** Cada archivo se guarda simultáneamente en dos nodos físicos independientes antes de confirmar la subida.
+- **Tolerancia a Fallos y Failover Transparente:** Si el nodo principal cae o pierde conectividad, el sistema redirige la descarga a la réplica sin interrumpir al usuario ni retornar error.
 
-Lo que el nodo **NO** hace:
+---
 
-- No decide la ubicación de los archivos (responsabilidad del algoritmo Round-Robin del Coordinador)[cite: 7, 8, 11].
-- No gestiona la replicación ni conoce la existencia de los demás nodos[cite: 8, 12, 14].
-- No mantiene un catálogo global ni estados persistentes de la red[cite: 8, 9].
-- No atiende a los usuarios finales; responde exclusivamente a peticiones del Coordinador[cite: 8, 14].
+## 🛠️ 2. Arquitectura del Sistema
+
+El sistema adopta una arquitectura desacoplada **Master-Worker** dividida en dos planos de operación:
 
 ```text
-Cliente ──► Coordinador (:8000) ──► Nodo 1 (Ivanna  - :8001) ──► ./storage/
-                                ──► Nodo 2 (Dayana  - :8002) ──► ./storage/
-                                ──► Nodo 3 (Victor  - :8003) ──► ./storage/
+               +----------------------------------+
+               |        CLIENTE / NAVEGADOR       |
+               +----------------+-----------------+
+                                |
+                   (HTTP / REST - Puerto 8000)
+                                v
+               +----------------------------------+
+               |     COORDINADOR (Host A)         |
+               |   - Plano de Control             |
+               |   - Catálogo de Metadatos        |
+               |   - Algoritmo Round-Robin        |
+               +----------------+-----------------+
+                                |
+        +-----------------------+-----------------------+
+        | (HTTPX / REST)        | (HTTPX / REST)        | (HTTPX / REST)
+        v                       v                       v
++---------------+       +---------------+       +---------------+
+| NODO 1 (Host B)|      | NODO 2 (Host C)|      | NODO 3 (Host D)|
+| Puerto 8001   |      | Puerto 8002   |      | Puerto 8003   |
+| ./storage/    |      | ./storage/    |      | ./storage/    |
++---------------+       +---------------+       +---------------+
 
 ```
 
-Los tres nodos ejecutan **exactamente el mismo código base**; sus diferencias operativas se gestionan mediante variables de entorno (`NODE_ID`, `NODE_PORT`, `NODE_HOST`).
+### Componentes:
+
+1. **Coordinador (Plano de Control - Host A):** Punto de entrada unificado. Mantiene el catálogo en `catalog.json`, aplica la rotación Round-Robin, gestiona la replicación síncrona y coordina el failover.
+2. **Nodos de Almacenamiento (Plano de Datos - Hosts B, C, D):** Servicios independientes y sin estado (*stateless*) encargados exclusivamente de guardar y leer los bytes físicos en sus directorios locales (`./storage/`).
 
 ---
 
-## 2. Estructura del Componente
+## 👥 3. Inventario de Infraestructura
+
+| Host | Responsable | Rol en la Arquitectura | IP (Tailscale) | Puerto | Estado |
+| --- | --- | --- | --- | --- | --- |
+| **A** | Santiago | Coordinador / Servidor Central | `100.116.61.8` | `8000` | Activo |
+| **B** | Ivanna | Nodo 1 (Almacenamiento) | `100.x.x.2` | `8001` | Activo |
+| **C** | Dayana | Nodo 2 (Almacenamiento) | `100.90.207.18` | `8002` | Activo |
+| **D** | Victor | Nodo 3 (Almacenamiento) | `100.x.x.4` | `8003` | Activo |
+
+---
+
+## 📂 4. Estructura del Código Fuente
+
+El código está estrictamente organizado por componentes:
 
 ```text
-node/
-├── __init__.py   # Inicialización del paquete Python
-├── main.py       # Punto de entrada y servidor Uvicorn / FastAPI
-└── router.py     # Lógica de endpoints internos (/health, /store, /retrieve)
-storage/          # Directorio de almacenamiento físico local (ignorado en Git)
+sistema-distribuido-almacenamiento/
+│
+├── coordinator/               # 🧠 COMPONENTE COORDINADOR (Host A)
+│   ├── __init__.py
+│   ├── catalog.py             # Persistencia y gestión del catálogo catalog.json
+│   ├── main.py                # Endpoints públicos FastAPI (Puerto 8000)
+│   └── services.py            # Round-Robin, Replicación Síncrona y Failover
+│
+├── node/                      # 💾 COMPONENTE NODOS TRABAJADORES (Hosts B, C, D)
+│   ├── __init__.py
+│   ├── main.py                # Punto de entrada del proceso del Nodo
+│   └── router.py              # Endpoints internos (/health, /store, /retrieve)
+│
+├── common/                    # 🛠️ MÓDULO DE CONFIGURACIÓN COMPARTIDO
+│   ├── __init__.py
+│   ├── config.py              # IPs de Tailscale, puertos y timeouts
+│   └── schemas.py             # Modelos de validación Pydantic
+│
+├── storage/                   # 📁 ALMACENAMIENTO FÍSICO DE ARCHIVOS
+│   └── .gitkeep               # Directorio local de persistencia
+│
+├── scripts/                   # 🧪 SCRIPTS AUXILIARES DE PRUEBA
+│   └── test_connectivity.py   # Diagnóstico rápido de red
+│
+├── catalog.json               # Catálogo central de metadatos (Coordinador)
+├── requirements.txt           # Dependencias de Python
+├── .gitignore
+└── README.md                  # Documentación principal del sistema
 
 ```
 
 ---
 
-## 3. Funcionamiento Interno
+## ⚙️ 5. Instalación y Configuración
 
-### A. Guardar un archivo (`POST /store`)
+### Requisitos Previos
 
-1. El Coordinador transmite el archivo vía `multipart/form-data`.
+* Python 3.9 o superior.
+* Tailscale instalado y activo en los 4 computadores.
 
-
-2. El nodo valida el nombre usando `safe_path()` para prevenir vulnerabilidades de *Path Traversal* (rechaza secuencias como `../` o barras de directorio).
-
-
-3. Stream del archivo en bloques de **1 MB (`CHUNK_SIZE`)** hacia un archivo temporal `.tmp` en `./storage/`, calculando en tiempo real el tamaño total y la firma **SHA-256**.
-
-
-4. Ejecuta un vaciado a disco (`os.fsync`) y un renombrado atómico (`os.replace`) hacia el nombre final.
-
-
-5. Devuelve respuesta `201 Created` con el identificador del nodo, nombre, tamaño y hash.
-
-
-
-Si ocurre una falla en el canal durante la transmisión, el archivo `.tmp` se elimina inmediatamente de forma segura.
-
-### B. Devolver un archivo (`GET /retrieve/{filename}`)
-
-1. Valida el nombre del archivo solicitado.
-
-
-2. Si el archivo existe físicamente en `./storage/`, retorna un `FileResponse` con la secuencia de bytes (`application/octet-stream`).
-
-
-3. Si el archivo no existe, devuelve `404 Not Found`. El Coordinador interpreta esta respuesta (o un *timeout*) para activar el *failover* y recuperar el recurso desde la réplica.
-
-
-
-### C. Monitoreo de Salud (`GET /health`)
-
-Responde un objeto JSON con código `200 OK`, el `node_id` y el número de archivos guardados localmente. Si el proceso o la máquina colapsan, la conexión HTTP falla inmediatamente, permitiendo al Coordinador marcar el nodo como no disponible.
-
----
-
-## 4. Requisitos e Instalación
-
-* **Python 3.9+**
-
-* **Tailscale** activo y conectado a la red virtual del proyecto (`100.x.x.x`)
-
-
-
-Desde la raíz del proyecto, instalar las dependencias requeridas:
+### 1. Clonar el repositorio e instalar dependencias
 
 ```bash
-# Creación y activación del entorno virtual
+# Clonar repositorio
+git clone <URL_DEL_REPOSITORIO>
+cd sistema-distribuido-almacenamiento
+
+# Crear entorno virtual
 python -m venv venv
 
-# Linux / Mac:
+# Activar entorno virtual
+# En Windows (PowerShell):
+.\venv\Scripts\Activate.ps1
+# En Linux / macOS:
 source venv/bin/activate
 
-# Windows (PowerShell):
-.\venv\Scripts\activate
-
-# Instalación de dependencias
-pip install fastapi uvicorn python-multipart httpx
+# Instalar librerías requeridas
+pip install -r requirements.txt
 
 ```
 
 ---
 
-## 5. Configuración por Variables de Entorno
+## 🚀 6. Guía de Ejecución
 
-| Variable | Valor por Defecto | Descripción |
-| --- | --- | --- |
-| `NODE_ID` | `node1` | Identificador del nodo (`node1`, `node2`, `node3`)
+### Opción A: Ejecutar un Nodo de Almacenamiento (Ivanna, Dayana, Victor)
 
- |
-| `NODE_PORT` | `8001` | Puerto HTTP asignado al servicio
+Cada integrante ejecuta en su computador el servicio del nodo indicando su `NODE_ID` y `NODE_PORT`:
 
- |
-| `NODE_HOST` | `0.0.0.0` | Interfaz de red de escucha (bind a todas las interfaces o IP de Tailscale)
+**En Windows (PowerShell):**
 
- |
-| `STORAGE_DIR` | `./storage` | Ruta absoluta o relativa donde se persisten los archivos
+```powershell
+# Nodo 1 (Ivanna)
+$env:NODE_ID="node1"; $env:NODE_PORT="8001"; python -m node.main
 
- |
+# Nodo 2 (Dayana)
+$env:NODE_ID="node2"; $env:NODE_PORT="8002"; python -m node.main
 
-### Asignación oficial del equipo
+# Nodo 3 (Victor)
+$env:NODE_ID="node3"; $env:NODE_PORT="8003"; python -m node.main
 
-| Integrante | Rol | `NODE_ID` | IP Tailscale | Puerto |
-| --- | --- | --- | --- | --- |
-| **Santiago** | Coordinador | N/A | `100.116.61.8` | `8000`<br> |
-| **Ivanna** | Nodo 1 | `node1` | `100.x.x.2` | `8001`<br> |
-| **Dayana** | Nodo 2 | `node2` | `100.90.207.18` | `8002`<br> |
-| **Victor** | Nodo 3 | `node3` | `100.x.x.4` | `8003`<br> |
+```
 
----
-
-## 6. Ejecución del Servicio
-
-Ejecutar **siempre desde la raíz del proyecto**:
-
-### Linux / macOS
+**En Linux / macOS:**
 
 ```bash
 NODE_ID=node1 NODE_PORT=8001 python -m node.main
 
 ```
 
-### Windows (PowerShell)
+### Opción B: Ejecutar el Coordinador (Santiago)
+
+En el Host A, se inicia el servidor maestro en el puerto 8000:
 
 ```powershell
-$env:NODE_ID="node1"; $env:NODE_PORT="8001"; python -m node.main
-
-```
-
-### Alternativa directa con Uvicorn
-
-```bash
-NODE_ID=node1 uvicorn node.main:app --host 0.0.0.0 --port 8001
+python -m coordinator.main
 
 ```
 
 ---
 
-## 7. Contrato de API Interna
+## 🖥️ Interfaz Web
 
-### `GET /health`
+Con el Coordinador en ejecución, abre `http://<IP-del-coordinador>:8000/ui` en el navegador. Muestra:
 
-* **Respuesta (`200 OK`):**
+- **Topología:** estado de cada nodo (activo/caído), su dirección, desde cuándo está conectado y su última respuesta; botón **Consultar estado** y los archivos que tiene realmente en disco, marcados como **P** (principal) o **R** (réplica).
+- **Subida:** al subir un archivo se ve a qué nodo fue como principal y dónde quedó la réplica.
+- **Catálogo:** cada archivo con sus dos ubicaciones y su integridad (2/2, degradado, perdido).
+- **Descarga:** informa qué nodo sirvió el archivo y si hubo **failover**.
+- **Actividad:** bitácora de subidas, descargas, failovers y errores.
 
-```json
-{
-  "status": "ok",
-  "node_id": "node1",
-  "files_stored": 5
-}
-
-```
-
-### `POST /store`
-
-* **Estructura de entrada (`multipart/form-data`):**
-* `file`: Archivo binario (Obligatorio).
-
-
-* `filename`: Nombre lógico opcional en texto.
-
-
-
-
-* **Respuesta (`201 Created`):**
-
-```json
-{
-  "status": "stored",
-  "node_id": "node1",
-  "filename": "documento.pdf",
-  "size_bytes": 1048576,
-  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-}
-
-```
-
-### `GET /retrieve/{filename}`
-
-* **Parámetro:** Nombre del archivo en la URL.
-
-
-* **Respuesta:** Stream de bytes binarios (`200 OK`) o error en JSON (`404 Not Found` / `400 Bad Request`).
-
-
-
-### Documentación Interactiva
-
-Con el servidor en ejecución, acceder a `http://localhost:8001/docs` (o sustituir por la IP de Tailscale) para probar las rutas mediante Swagger UI.
+Endpoints añadidos: `GET /events`, `GET /nodes/files`, `GET /catalog` (coordinador) y `GET /files` (nodo).
 
 ---
 
-## 8. Guía de Pruebas y Verificación
+## 📡 7. Contrato de API (Endpoints)
 
-### Pruebas Manuales con cURL (Terminal)
+### Endpoints Públicos del Coordinador (`http://100.116.61.8:8000`)
 
-```bash
-# 1. Crear archivo de prueba
-echo "Prueba de almacenamiento distribuido UTP" > test.txt
+| Método | Ruta | Descripción | Respuesta Esperada |
+| --- | --- | --- | --- |
+| `POST` | `/upload` | Subida de archivo con Round-Robin y replicación $k=2$ | `201 Created` |
+| `GET` | `/download/{filename}` | Descarga con failover transparente ante caídas | `200 OK` (Stream de bytes) |
+| `GET` | `/files` | Lista del catálogo completo y ubicaciones físicas | `200 OK` (JSON) |
+| `GET` | `/status` | Diagnóstico de salud de todos los nodos | `200 OK` (JSON) |
 
-# 2. Comprobar salud
-curl http://localhost:8001/health
+### Endpoints Internos de los Nodos (Puertos `8001`, `8002`, `8003`)
 
-# 3. Guardar archivo en disco
-curl -F "file=@test.txt" http://localhost:8001/store
-
-# 4. Recuperar contenido
-curl http://localhost:8001/retrieve/test.txt
-
-# 5. Probar recuperación de archivo inexistente (Debe retornar 404)
-curl -i http://localhost:8001/retrieve/no_existe.txt
-
-```
-
-### Lista de Verificación de Criterios
-
-| Prueba | Resultado Esperado | Criterio de Aceptación |
-| --- | --- | --- |
-| `GET /health` | HTTP 200 | Retorna JSON con el `node_id` y contador correcto.
-
- |
-| `POST /store` | HTTP 201 | El archivo físico aparece en la carpeta `./storage/`.
-
- |
-| Hash SHA-256 | Coincidencia exacta | El hash devuelto coincide con el hash local del archivo.
-
- |
-| `GET /retrieve` | HTTP 200 | Integridad total de bytes recibidos.
-
- |
-| Path Traversal | HTTP 400 / 404 | Intento de leer `../main.py` es bloqueado por `safe_path()`.
-
- |
-| Escritura Atómica | Sin corrupción | Cortes de energía no dejan archivos temporales incoherentes.
-
- |
+| Método | Ruta | Descripción | Respuesta Esperada |
+| --- | --- | --- | --- |
+| `GET` | `/health` | Estado de salud y cantidad de archivos almacenados | `200 OK` |
+| `POST` | `/store` | Guarda bytes en disco local (`./storage/`) atómicamente | `201 Created` |
+| `GET` | `/retrieve/{filename}` | Retorna bytes del archivo desde el disco local | `200 OK` / `404 Not Found` |
 
 ---
 
-## 9. Decisiones de Diseño Técnico
+## 🧪 8. Plan de Pruebas y Verificación (Bitácora)
 
-1. **Escritura Atómica (`.tmp` + `os.replace`):** Evita la corrupción parcial de archivos si la conexión de red se interrumpe durante el stream de subida.
+Para verificar el correcto funcionamiento del sistema distribuido:
 
+### 1. Prueba P01 - Conectividad de Red
 
-2. **Transferencia por Bloques (`CHUNK_SIZE = 1MB`):** Previene picos de consumo de memoria RAM procesando archivos en buffers acotados.
+Ejecutar el script de diagnóstico para validar la red Mesh de Tailscale:
 
-
-3. **Validación de Seguridad (`safe_path`):** Aísla strictly todas las operaciones de disco dentro del directorio `./storage/`.
-
-
-4. **Desacoplamiento (*Stateless*):** El nodo no mantiene estado de red ni lógica de coordinación, facilitando su reinicio instantáneo ante fallos.
-
-
-
----
-
-## 10. Archivo `.gitignore` Recomendado
-
-```text
-venv/
-__pycache__/
-*.pyc
-storage/*
-!storage/.gitkeep
-.env
+```powershell
+python scripts/test_connectivity.py
 
 ```
 
-```
+### 2. Prueba P02 - Distribución y Replicación
 
-```
+Abre en el navegador `http://localhost:8000/docs` e interactúa con el endpoint `POST /upload`. Sube tres archivos consecutivos y verifica que el catálogo `catalog.json` distribuya los archivos rotativamente entre los nodos.
+
+### 3. Prueba P03 - Verificación Física
+
+Revisa los directorios `./storage/` en los equipos de los nodos para corroborar que los archivos binarios existan físicamente.
+
+### 4. Prueba P04 - Tolerancia a Fallos (Failover)
+
+1. Detén el servicio en el **Nodo 1** (presionando `Ctrl + C` en su terminal).
+2. Solicita la descarga mediante `GET /download/{filename}` de un archivo cuyo nodo principal era el **Nodo 1**.
+3. Observa cómo el Coordinador redirige la petición hacia la réplica en el **Nodo 2** y entrega el archivo exitosamente.
+
+### 5. Prueba P05 - Análisis de Punto Único de Fallo (SPOF)
+
+Detén el proceso del Coordinador manteniendo activos los nodos. Demuestra que la interfaz pública deja de responder (Single Point of Failure), aunque la información permanezca intacta en las carpetas `./storage/` de los nodos.

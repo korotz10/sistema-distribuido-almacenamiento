@@ -15,6 +15,9 @@
   header{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid var(--line)}
   h1{font-size:18px;margin:0;font-weight:650;letter-spacing:.2px}
   h1 small{display:block;font-weight:400;color:var(--muted);font-size:12px;margin-top:2px}
+  .h2row{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}.h2row h2{margin:0}
+  .times{font-size:11.5px;color:var(--muted);display:grid;gap:1px;margin:-4px 0 10px}.times b{color:var(--text);font-weight:600}
+  .rr{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;font-size:13px;color:var(--muted)}
   h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 12px;font-weight:600}
   .stats{display:flex;gap:20px;flex-wrap:wrap}
   .stat b{font-size:20px;display:block;font-variant-numeric:tabular-nums}
@@ -84,7 +87,7 @@
   #events time{color:var(--muted);font-family:var(--mono);font-size:11.5px;flex:none}
   .ev{font-size:10px;font-weight:700;text-transform:uppercase;padding:1px 7px;border-radius:5px;flex:none;align-self:flex-start;margin-top:1px}
   .ev.upload{background:#2dd4bf22;color:var(--primary)} .ev.download{background:#60a5fa22;color:#60a5fa}
-  .ev.failover{background:#fbbf2422;color:var(--warn)} .ev.error{background:#f8717122;color:var(--bad)}
+  .ev.node{background:#8c9ab522;color:#cbd5e1} .ev.failover{background:#fbbf2422;color:var(--warn)} .ev.error{background:#f8717122;color:var(--bad)}
 
   #toast{position:fixed;right:20px;bottom:20px;max-width:360px;background:var(--panel2);border:1px solid var(--line);border-left:4px solid var(--primary);border-radius:8px;padding:10px 14px;opacity:0;transform:translateY(8px);transition:.25s;pointer-events:none}
   #toast.show{opacity:1;transform:none}
@@ -106,7 +109,7 @@
 
 <main>
   <section class="card">
-    <h2>Topología de la red</h2>
+    <div class="h2row"><h2>Topología de la red</h2><span><span id="lastcheck" class="mono"></span> <button id="btn-status">⟳ Consultar estado</button></span></div>
     <div id="topo">
       <svg id="lines"></svg>
       <div class="coord" id="coord"><strong>🧠 Coordinador</strong><small id="coord-url"></small></div>
@@ -132,7 +135,8 @@
   </div>
 
   <section class="card">
-    <h2>Catálogo de archivos</h2>
+    <h2>Catálogo de archivos <small style="text-transform:none;letter-spacing:0;font-weight:400">· mantenido por el coordinador (catalog.json)</small></h2>
+    <div class="rr" id="rr"></div>
     <div class="tbl-wrap">
       <table>
         <thead><tr><th>Archivo</th><th>Tamaño</th><th>Principal</th><th>Réplica</th><th>Estado</th><th>Subido</th><th>SHA-256</th><th></th></tr></thead>
@@ -147,17 +151,18 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt = n => n < 1024 ? n + ' B' : n < 1048576 ? (n/1024).toFixed(1) + ' KB' : n < 1073741824 ? (n/1048576).toFixed(1) + ' MB' : (n/1073741824).toFixed(2) + ' GB';
-const when = iso => { const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString('es-CO', {dateStyle:'short', timeStyle:'medium'}); };
+const when = iso => { if(!iso) return '—'; const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString('es-CO', {dateStyle:'short', timeStyle:'medium'}); };
 
-let state = { status: [], files: {}, real: {}, events: [] };
+let state = { status: [], files: {}, real: {}, events: [], cat: null };
 let highlight = { p: null, r: null, until: 0 };
 
 async function j(url, opts){ const r = await fetch(url, opts); if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText); return r.json(); }
 
 async function refresh(){
   try {
-    const [st, fl, real, ev] = await Promise.all([j('/status'), j('/files'), j('/nodes/files'), j('/events')]);
-    state = { status: st.nodes, files: fl.files, real: real.nodes, events: ev.events };
+    const [st, fl, real, ev, cat] = await Promise.all([j('/status'), j('/files'), j('/nodes/files'), j('/events'), j('/catalog')]);
+    state = { status: st.nodes, files: fl.files, real: real.nodes, events: ev.events, cat };
+    $('#lastcheck').textContent = 'Última consulta: ' + new Date().toLocaleTimeString('es-CO');
     $('#conn').className = 'badge b-ok'; $('#conn').textContent = '● Coordinador en línea';
     render();
   } catch(e){
@@ -204,6 +209,9 @@ function render(){
       <div class="node-head"><div><strong>💾 ${esc(n.node_id)}</strong><small>${esc(n.name)}</small></div>
         <span class="badge ${ok ? 'b-ok' : 'b-bad'}">${ok ? 'ACTIVO' : 'CAÍDO'}</span></div>
       <div class="url">${esc(n.url)}</div>
+      <div class="times">${ok
+        ? `<span>Conectado desde: <b>${esc(when(n.connected_since))}</b></span><span>Última respuesta: <b>${esc(when(n.last_seen))}</b></span>`
+        : `<span>Caído desde: <b>${esc(when(n.down_since))}</b></span><span>Última respuesta: <b>${n.last_seen ? esc(when(n.last_seen)) : 'nunca'}</b></span>`}</div>
       ${ok ? (lis ? `<ul class="filelist">${lis}</ul>` : '<div class="empty">Sin archivos almacenados</div>') : '<div class="empty msg-err">No responde. Sus archivos se sirven desde las réplicas.</div>'}
     </div>`;
   }).join('');
@@ -221,6 +229,10 @@ function render(){
       <td class="mono" title="${esc(f.sha256)}">${esc(f.sha256.slice(0, 12))}…</td>
       <td><button data-dl="${esc(f.filename)}">Descargar</button></td></tr>`;
   }).join('') : '<tr><td colspan="8" class="empty">Aún no hay archivos. Sube el primero 👆</td></tr>';
+
+  // Turno Round-Robin
+  const c = state.cat;
+  $('#rr').innerHTML = c ? `<span>Próxima subida →</span><span class="chip p" style="padding:2px 10px">${esc(c.next_primary)} · principal</span><span class="chip r" style="padding:2px 10px">${esc(c.next_replica)} · réplica</span><span>(turno Round-Robin ${c.round_robin_index} · ${c.total_files} archivos en catálogo)</span>` : '';
 
   // Eventos
   $('#events').innerHTML = state.events.length ? state.events.map(e =>
@@ -292,6 +304,7 @@ document.addEventListener('click', async e => {
 
 let tt; function toast(msg, kind=''){ const t = $('#toast'); t.textContent = msg; t.className = 'show ' + kind; clearTimeout(tt); tt = setTimeout(() => t.className = '', 5000); }
 
+$('#btn-status').onclick = async e => { const b = e.currentTarget; b.disabled = true; b.textContent = '⟳ Consultando…'; await refresh(); b.disabled = false; b.textContent = '⟳ Consultar estado'; toast('Estado de los nodos actualizado'); };
 refresh(); setInterval(refresh, 4000);
 </script>
 </body>

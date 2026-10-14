@@ -5,6 +5,7 @@ Ofrece la interfaz unificada REST (Puerto 8000) para el usuario.
 import asyncio
 import hashlib
 from collections import deque
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -30,13 +31,60 @@ from coordinator.services import (
     store_file_in_node,
 )
 
+catalog = CatalogManager()
+
+# Estado de conexión de cada nodo: cuándo se conectó, última respuesta y desde cuándo está caído
+node_state: dict = {}
+PROBE_INTERVAL = 3  # segundos entre sondeos automáticos
+
+
+def _now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+async def probe_nodes() -> list:
+    """Sondea todos los nodos, actualiza node_state y registra conexiones/desconexiones."""
+    nodes = get_nodes()
+    results = await asyncio.gather(*(check_node_health(n["url"]) for n in nodes))
+    out = []
+    for node, (alive, details) in zip(nodes, results):
+        st = node_state.setdefault(node["id"], {"alive": None, "connected_since": None, "last_seen": None, "down_since": None})
+        now = _now()
+        if alive:
+            if st["alive"] is not True:
+                st["connected_since"], st["down_since"] = now, None
+                log_event("node", f"{node['id']} conectado ({node['url']})", node=node["id"])
+            st["last_seen"] = now
+        elif st["alive"] is not False:
+            st["down_since"] = now
+            log_event("node", f"{node['id']} dejó de responder ({node['url']})", node=node["id"])
+        st["alive"] = bool(alive)
+        out.append((node, alive, details, dict(st)))
+    return out
+
+
+async def _probe_loop():
+    while True:
+        try:
+            await probe_nodes()
+        except Exception as exc:
+            print(f"⚠️ Error sondeando nodos: {exc}")
+        await asyncio.sleep(PROBE_INTERVAL)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    task = asyncio.create_task(_probe_loop())
+    yield
+    task.cancel()
+
+
 app = FastAPI(
     title="Mini Drive Distribuido - Coordinador",
     description="Servidor Central de Almacenamiento Distribuido (Host A)",
     version="1.0.0",
+    lifespan=lifespan,
 )
-
-catalog = CatalogManager()
 
 # Bitácora en memoria de las últimas operaciones (la consume la interfaz web)
 events: deque = deque(maxlen=200)
@@ -184,16 +232,33 @@ async def list_files():
 async def health_status():
     """Diagnóstico de red: Sondea la disponibilidad de los 3 Nodos de almacenamiento."""
     status_results = []
-    for node in get_nodes():
-        is_alive, details = await check_node_health(node["url"])
+    for node, alive, details, st in await probe_nodes():
         status_results.append({
             "node_id": node["id"],
             "name": node["name"],
             "url": node["url"],
-            "status": "HEALTHY" if is_alive else "DOWN",
+            "status": "HEALTHY" if alive else "DOWN",
             "details": details,
+            "connected_since": st["connected_since"] if alive else None,
+            "last_seen": st["last_seen"],
+            "down_since": None if alive else st["down_since"],
         })
     return {"nodes": status_results}
+
+
+@app.get("/catalog", tags=["Diagnóstico"])
+async def catalog_info():
+    """Resumen del catálogo: total de archivos y turno actual del Round-Robin."""
+    nodes = get_nodes()
+    idx = catalog.get_round_robin_index() % len(nodes)
+    files = catalog.list_files()
+    return {
+        "total_files": len(files),
+        "total_bytes": sum(f["size_bytes"] for f in files.values()),
+        "round_robin_index": idx,
+        "next_primary": nodes[idx]["id"],
+        "next_replica": nodes[(idx + 1) % len(nodes)]["id"],
+    }
 
 
 @app.get("/events", tags=["Diagnóstico"])
