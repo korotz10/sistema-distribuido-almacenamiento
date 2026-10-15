@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import logging
 import os
 from pathlib import Path
+import re
 from threading import Lock
 from urllib.parse import quote
 from uuid import uuid4
@@ -26,6 +27,19 @@ logger = logging.getLogger(__name__)
 
 # Segundos entre sondeos automáticos de los nodos (0 = desactivado). Alimenta la interfaz web.
 PROBE_INTERVAL = float(os.getenv("PROBE_INTERVAL", "3"))
+
+
+def make_storage_key(name):
+    """Clave interna del objeto en los nodos: aleatoria, pero conserva la extensión
+    original (foto.png -> 3f9a....png) para que el archivo guardado siga siendo una imagen."""
+    key = uuid4().hex
+    suffix = Path(name).suffix.lower()
+    if re.fullmatch(r"\.[a-z0-9]{1,10}", suffix):
+        try:
+            return validate_filename(key + suffix)
+        except Exception:
+            pass  # si el nombre no es válido para el nodo, se usa la clave sin extensión
+    return key
 
 
 def create_app(manager=None):
@@ -114,7 +128,7 @@ def create_app(manager=None):
                 content = read_upload(file.file)
                 nodes = services.get_nodes()
                 # Un intento fallido nunca reutiliza el objeto de otro intento.
-                key = uuid4().hex
+                key = make_storage_key(name)
                 confirmed, storage_ids = [], set()
                 for node in catalog.candidates(nodes):
                     ready, details = services.check_node_health(node)
