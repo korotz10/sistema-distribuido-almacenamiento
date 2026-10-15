@@ -148,6 +148,7 @@
 <div id="toast"></div>
 
 <script>
+const isUp = n => n.status === 'UP' || n.status === 'HEALTHY';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt = n => n < 1024 ? n + ' B' : n < 1048576 ? (n/1024).toFixed(1) + ' KB' : n < 1073741824 ? (n/1048576).toFixed(1) + ' MB' : (n/1073741824).toFixed(2) + ' GB';
@@ -159,15 +160,35 @@ let highlight = { p: null, r: null, until: 0 };
 async function j(url, opts){ const r = await fetch(url, opts); if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText); return r.json(); }
 
 async function refresh(){
-  try {
-    const [st, fl, real, ev, cat] = await Promise.all([j('/status'), j('/files'), j('/nodes/files'), j('/events'), j('/catalog')]);
-    state = { status: st.nodes, files: fl.files, real: real.nodes, events: ev.events, cat };
-    $('#lastcheck').textContent = 'Última consulta: ' + new Date().toLocaleTimeString('es-CO');
-    $('#conn').className = 'badge b-ok'; $('#conn').textContent = '● Coordinador en línea';
-    render();
-  } catch(e){
-    $('#conn').className = 'badge b-bad'; $('#conn').textContent = '● Sin conexión con el coordinador';
+  const calls = { status: '/status', files: '/files', real: '/nodes/files', events: '/events', cat: '/catalog' };
+  const keys = Object.keys(calls);
+  const res = await Promise.allSettled(keys.map(k => j(calls[k])));
+  const got = {}, failed = [];
+  res.forEach((r, i) => r.status === 'fulfilled' ? got[keys[i]] = r.value : failed.push(`${calls[keys[i]]} (${r.reason && r.reason.message})`));
+  const badge = $('#conn');
+  if (!got.status) {
+    // Sin /status no hay nada que mostrar: el coordinador realmente no responde
+    badge.className = 'badge b-bad';
+    badge.textContent = '● Sin conexión con el coordinador';
+    badge.title = 'Falló: ' + failed.join(', ');
+    return;
   }
+  state = {
+    status: got.status.nodes,
+    files: got.files ? got.files.files : state.files,
+    real: got.real ? got.real.nodes : state.real,
+    events: got.events ? got.events.events : state.events,
+    cat: got.cat || state.cat,
+  };
+  if (failed.length) {
+    badge.className = 'badge b-warn';
+    badge.textContent = '● Coordinador en línea (versión incompleta)';
+    badge.title = 'Faltan endpoints: ' + failed.join(', ') + '. Actualiza coordinator/main.py y reinicia el coordinador.';
+  } else {
+    badge.className = 'badge b-ok'; badge.textContent = '● Coordinador en línea'; badge.title = '';
+  }
+  $('#lastcheck').textContent = 'Última consulta: ' + new Date().toLocaleTimeString('es-CO');
+  render();
 }
 
 // Estado de integridad de un archivo: cuántas de sus 2 copias están realmente en disco
@@ -185,7 +206,7 @@ function fileHealth(f){
 
 function render(){
   const files = Object.values(state.files).sort((a,b) => b.created_at.localeCompare(a.created_at));
-  const up = state.status.filter(n => n.status === 'HEALTHY').length;
+  const up = state.status.filter(n => isUp(n)).length;
   const health = files.map(fileHealth);
   $('#s-nodes').textContent = up + ' / ' + state.status.length;
   $('#s-files').textContent = files.length;
@@ -196,7 +217,7 @@ function render(){
   // Nodos
   const now = Date.now();
   $('#nodes').innerHTML = state.status.map(n => {
-    const ok = n.status === 'HEALTHY';
+    const ok = isUp(n);
     const real = state.real[n.node_id];
     const items = real && real.reachable ? real.files : [];
     const cls = ['node', ok ? '' : 'down', now < highlight.until && highlight.p === n.node_id ? 'hl-p' : '', now < highlight.until && highlight.r === n.node_id ? 'hl-r' : ''].join(' ');
@@ -206,7 +227,7 @@ function render(){
       return `<li title="${esc(it.filename)}"><i class="role ${role}">${role === 'X' ? '?' : role}</i><span class="nm">${esc(it.filename)}</span><span class="sz">${fmt(it.size_bytes)}</span></li>`;
     }).join('');
     return `<div class="${cls}" id="node-${esc(n.node_id)}">
-      <div class="node-head"><div><strong>💾 ${esc(n.node_id)}</strong><small>${esc(n.name)}</small></div>
+      <div class="node-head"><div><strong>💾 ${esc(n.node_id)}</strong><small>${esc(n.name || '')}</small></div>
         <span class="badge ${ok ? 'b-ok' : 'b-bad'}">${ok ? 'ACTIVO' : 'CAÍDO'}</span></div>
       <div class="url">${esc(n.url)}</div>
       <div class="times">${ok
@@ -232,11 +253,11 @@ function render(){
 
   // Turno Round-Robin
   const c = state.cat;
-  $('#rr').innerHTML = c ? `<span>Próxima subida →</span><span class="chip p" style="padding:2px 10px">${esc(c.next_primary)} · principal</span><span class="chip r" style="padding:2px 10px">${esc(c.next_replica)} · réplica</span><span>(turno Round-Robin ${c.round_robin_index} · ${c.total_files} archivos en catálogo)</span>` : '';
+  $('#rr').innerHTML = c && c.next_primary ? `<span>Próxima subida →</span><span class="chip p" style="padding:2px 10px">${esc(c.next_primary)} · principal</span><span class="chip r" style="padding:2px 10px">${esc(c.next_replica)} · réplica</span><span>(${c.total_files} archivos en catálogo)</span>` : '';
 
   // Eventos
   $('#events').innerHTML = state.events.length ? state.events.map(e =>
-    `<li><time>${esc(e.time.slice(11))}</time><span class="ev ${esc(e.type)}">${esc(e.type)}</span><span>${esc(e.message)}</span></li>`).join('')
+    `<li><time>${esc(new Date(e.time).toLocaleTimeString('es-CO'))}</time><span class="ev ${esc(e.type)}">${esc(e.type)}</span><span>${esc(e.message)}</span></li>`).join('')
     : '<li class="empty">Sin actividad todavía.</li>';
 
   drawLines();
@@ -252,8 +273,8 @@ function drawLines(){
     const r = el.getBoundingClientRect();
     const x2 = r.left + r.width/2 - topo.left, y2 = r.top - topo.top, my = (y1 + y2)/2;
     const hlp = now < highlight.until && highlight.p === n.node_id, hlr = now < highlight.until && highlight.r === n.node_id;
-    const color = n.status !== 'HEALTHY' ? '#f87171' : hlp ? '#2dd4bf' : hlr ? '#a78bfa' : '#3a4a6a';
-    const dash = n.status !== 'HEALTHY' ? '5 5' : hlr ? '7 5' : '';
+    const color = !isUp(n) ? '#f87171' : hlp ? '#2dd4bf' : hlr ? '#a78bfa' : '#3a4a6a';
+    const dash = !isUp(n) ? '5 5' : hlr ? '7 5' : '';
     out += `<path d="M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2}" fill="none" stroke="${color}" stroke-width="${hlp||hlr ? 3 : 2}" ${dash ? `stroke-dasharray="${dash}"` : ''}/>`;
   });
   $('#lines').innerHTML = out;
