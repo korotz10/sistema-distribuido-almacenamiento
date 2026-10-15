@@ -55,6 +55,17 @@ class NodeStorage:
             raise HTTPException(404, "Archivo no encontrado en este nodo")
         return path
 
+    def delete(self, filename):
+        """Borra una copia. Es idempotente: si ya no está, responde 'absent' sin error."""
+        if filename.startswith("."):
+            raise HTTPException(400, "Nombre de archivo no válido")
+        path = self.path(filename)
+        with self.lock:
+            existed = path.is_file()
+            if existed:
+                path.unlink()
+        return {"status": "deleted" if existed else "absent", "node_id": self.node_id, "filename": filename}
+
 
 def create_router(storage):
     router = APIRouter()
@@ -74,5 +85,9 @@ def create_router(storage):
     @router.get("/retrieve/{filename}")
     def retrieve(filename: str):
         return FileResponse(storage.retrieve(filename), filename=filename, media_type="application/octet-stream")
+
+    @router.delete("/store/{filename}")
+    def delete(filename: str):
+        return storage.delete(filename)
 
     return router

@@ -8,10 +8,12 @@ import logging
 import os
 from pathlib import Path
 import re
+import time
 from threading import Lock
 from urllib.parse import quote
 from uuid import uuid4
 
+import httpx
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -26,7 +28,10 @@ from coordinator import services
 logger = logging.getLogger(__name__)
 
 # Segundos entre sondeos automáticos de los nodos (0 = desactivado). Alimenta la interfaz web.
-PROBE_INTERVAL = float(os.getenv("PROBE_INTERVAL", "3"))
+PROBE_INTERVAL = float(os.getenv("PROBE_INTERVAL", "5"))
+# Máximo de espera por la respuesta de salud de un nodo. Un nodo que no contesta en este
+# tiempo se marca DOWN sin hacer esperar a los demás ni a la interfaz.
+PROBE_TIMEOUT = float(os.getenv("PROBE_TIMEOUT", "2"))
 
 
 def make_storage_key(name):
@@ -54,27 +59,50 @@ def create_app(manager=None):
     def log_event(kind, message, **extra):
         events.appendleft({"time": now(), "type": kind, "message": message, **extra})
 
+    probe_pool = ThreadPoolExecutor(max_workers=8)
+    probe_lock = Lock()
+
     def probe_nodes():
-        """Sondea todos los nodos, actualiza cuándo se conectaron/cayeron y devuelve su estado."""
+        """Sondea todos los nodos en paralelo (con tiempo máximo), actualiza cuándo se conectaron
+        o cayeron y devuelve su estado. Solo un sondeo a la vez: nunca se acumulan."""
+        with probe_lock:
+            nodes = services.get_nodes()
+            futures = [probe_pool.submit(services.check_node_health, n) for n in nodes]
+            checks = []
+            for fut in futures:
+                try:
+                    checks.append(fut.result(timeout=PROBE_TIMEOUT))
+                except Exception:  # sin respuesta a tiempo = caído
+                    checks.append((False, None))
+            out = []
+            with state_lock:
+                for node, (ready, details) in zip(nodes, checks):
+                    st = node_state.setdefault(node["id"], {"alive": None, "connected_since": None, "last_seen": None,
+                                                            "down_since": None, "details": None, "checked": 0.0})
+                    if ready:
+                        if st["alive"] is not True:
+                            st["connected_since"], st["down_since"] = now(), None
+                            log_event("node", f"{node['id']} conectado", node=node["id"])
+                        st["last_seen"] = now()
+                    elif st["alive"] is not False:
+                        st["down_since"] = now()
+                        log_event("node", f"{node['id']} dejó de responder", node=node["id"])
+                    st["alive"], st["details"], st["checked"] = bool(ready), details, time.monotonic()
+                    out.append((node, ready, details, dict(st)))
+            return out
+
+    def status_snapshot(force=False):
+        """Estado de los nodos. Usa el último sondeo automático (instantáneo) y solo consulta
+        a los nodos si se pide explícitamente, si el sondeo está desactivado o si está vencido."""
         nodes = services.get_nodes()
-        with ThreadPoolExecutor(max_workers=max(1, len(nodes))) as pool:
-            checks = list(pool.map(services.check_node_health, nodes))
-        out = []
+        max_age = max(PROBE_INTERVAL * 2, 2.0)
         with state_lock:
-            for node, (ready, details) in zip(nodes, checks):
-                st = node_state.setdefault(node["id"], {"alive": None, "connected_since": None,
-                                                        "last_seen": None, "down_since": None})
-                if ready:
-                    if st["alive"] is not True:
-                        st["connected_since"], st["down_since"] = now(), None
-                        log_event("node", f"{node['id']} conectado", node=node["id"])
-                    st["last_seen"] = now()
-                elif st["alive"] is not False:
-                    st["down_since"] = now()
-                    log_event("node", f"{node['id']} dejó de responder", node=node["id"])
-                st["alive"] = bool(ready)
-                out.append((node, ready, details, dict(st)))
-        return out
+            fresh = all(n["id"] in node_state and time.monotonic() - node_state[n["id"]]["checked"] <= max_age
+                        for n in nodes)
+            if fresh and not force and PROBE_INTERVAL > 0:
+                return [(n, node_state[n["id"]]["alive"], node_state[n["id"]]["details"], dict(node_state[n["id"]]))
+                        for n in nodes]
+        return probe_nodes()
 
     async def probe_loop():
         while True:
@@ -164,6 +192,39 @@ def create_app(manager=None):
     def files():
         return {"files": app.state.catalog.list_files()}
 
+    @app.delete("/files/{filename}")
+    def delete_file(filename: str):
+        """Elimina el archivo de los dos nodos y, solo si ambos confirman, del catálogo."""
+        validate_filename(filename)
+        with upload_lock:  # no se mezcla con una subida del mismo nombre
+            catalog = app.state.catalog
+            record = catalog.get_file(filename)
+            if not record:
+                raise HTTPException(404, "Archivo no encontrado en el catálogo")
+            nodes = {node["id"]: node for node in services.get_nodes()}
+            deleted, failed = [], []
+            for node_id in (record["primary_node"], record["replica_node"]):
+                node = nodes.get(node_id)
+                if node is None:
+                    failed.append(f"{node_id} (no está configurado)")
+                    continue
+                try:
+                    response = httpx.delete(f"{node['url']}/store/{quote(record['storage_key'], safe='')}",
+                                            timeout=httpx.Timeout(5.0, connect=3.0))
+                    if response.status_code == 200:
+                        deleted.append(node_id)
+                    else:
+                        failed.append(f"{node_id} (respondió {response.status_code}; ¿tiene el node/router.py actualizado?)")
+                except httpx.HTTPError:
+                    failed.append(f"{node_id} (no responde)")
+            if failed:
+                log_event("error", f"No se eliminó '{filename}' del todo: falló {', '.join(failed)}", file=filename)
+                raise HTTPException(503, "No se eliminó el archivo; falló: " + "; ".join(failed)
+                                    + ". Sigue en el catálogo: reintenta cuando el nodo esté activo.")
+            catalog.delete_file(filename)
+            log_event("delete", f"'{filename}' eliminado de {record['primary_node']} y {record['replica_node']}", file=filename)
+            return {"message": "Archivo eliminado de los dos nodos", "filename": filename, "deleted_from": deleted}
+
     @app.get("/download/{filename}")
     def download(filename: str):
         validate_filename(filename)
@@ -197,9 +258,9 @@ def create_app(manager=None):
         raise HTTPException(503, "Ninguna de las dos copias está disponible y es válida")
 
     @app.get("/status")
-    def status():
+    def status(refresh: bool = False):
         result = []
-        for node, ready, details, st in probe_nodes():
+        for node, ready, details, st in status_snapshot(force=refresh):
             result.append({**node, "node_id": node["id"], "status": "UP" if ready else "DOWN", "details": details,
                            "connected_since": st["connected_since"] if ready else None,
                            "last_seen": st["last_seen"],

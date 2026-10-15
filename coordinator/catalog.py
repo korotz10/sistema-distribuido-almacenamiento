@@ -72,6 +72,15 @@ class CatalogManager:
             index = self._read()["round_robin_index"] % len(nodes)
             return nodes[index:] + nodes[:index]
 
+    def delete_file(self, filename):
+        """Quita un archivo del catálogo y devuelve su registro (None si no existía)."""
+        with self.lock:
+            data = self._read()
+            record = data["files"].pop(filename, None)
+            if record is not None:
+                self._write(data)
+            return record
+
     def add_file(self, record, node_count):
         with self.lock:
             data = self._read()

@@ -80,6 +80,7 @@
   .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)} .dot.unk{background:var(--muted)}
   button{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:5px 12px;cursor:pointer}
   button:hover{border-color:var(--primary)}
+  button.danger:hover{border-color:var(--bad);color:var(--bad)}
 
   /* Eventos */
   #events{list-style:none;margin:0;padding:0;max-height:300px;overflow:auto;display:grid;gap:2px}
@@ -87,7 +88,7 @@
   #events time{color:var(--muted);font-family:var(--mono);font-size:11.5px;flex:none}
   .ev{font-size:10px;font-weight:700;text-transform:uppercase;padding:1px 7px;border-radius:5px;flex:none;align-self:flex-start;margin-top:1px}
   .ev.upload{background:#2dd4bf22;color:var(--primary)} .ev.download{background:#60a5fa22;color:#60a5fa}
-  .ev.node{background:#8c9ab522;color:#cbd5e1} .ev.failover{background:#fbbf2422;color:var(--warn)} .ev.error{background:#f8717122;color:var(--bad)}
+  .ev.node{background:#8c9ab522;color:#cbd5e1} .ev.delete{background:#f8717122;color:var(--bad)} .ev.failover{background:#fbbf2422;color:var(--warn)} .ev.error{background:#f8717122;color:var(--bad)}
 
   #toast{position:fixed;right:20px;bottom:20px;max-width:360px;background:var(--panel2);border:1px solid var(--line);border-left:4px solid var(--primary);border-radius:8px;padding:10px 14px;opacity:0;transform:translateY(8px);transition:.25s;pointer-events:none}
   #toast.show{opacity:1;transform:none}
@@ -159,8 +160,8 @@ let highlight = { p: null, r: null, until: 0 };
 
 async function j(url, opts){ const r = await fetch(url, opts); if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText); return r.json(); }
 
-async function refresh(){
-  const calls = { status: '/status', files: '/files', real: '/nodes/files', events: '/events', cat: '/catalog' };
+async function refresh(force){
+  const calls = { status: force ? '/status?refresh=true' : '/status', files: '/files', real: '/nodes/files', events: '/events', cat: '/catalog' };
   const keys = Object.keys(calls);
   const res = await Promise.allSettled(keys.map(k => j(calls[k])));
   const got = {}, failed = [];
@@ -248,7 +249,7 @@ function render(){
       <td><span class="badge ${h.cls}">${h.label}</span></td>
       <td>${esc(when(f.created_at))}</td>
       <td class="mono" title="${esc(f.sha256)}">${esc(f.sha256.slice(0, 12))}…</td>
-      <td><button data-dl="${esc(f.filename)}">Descargar</button></td></tr>`;
+      <td style="white-space:nowrap"><button data-dl="${esc(f.filename)}">Descargar</button> <button class="danger" data-del="${esc(f.filename)}">Eliminar</button></td></tr>`;
   }).join('') : '<tr><td colspan="8" class="empty">Aún no hay archivos. Sube el primero 👆</td></tr>';
 
   // Turno Round-Robin
@@ -311,6 +312,16 @@ drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); if(e.dat
 
 // Descarga (lee quién sirvió el archivo)
 document.addEventListener('click', async e => {
+  const del = e.target.dataset && e.target.dataset.del;
+  if (del) {
+    if (!confirm(`¿Eliminar "${del}" de los dos nodos? Esta acción no se puede deshacer.`)) return;
+    e.target.disabled = true;
+    try {
+      await j('/files/' + encodeURIComponent(del), { method: 'DELETE' });
+      toast(`"${del}" eliminado de los dos nodos`);
+    } catch(err){ toast(err.message, 'bad'); }
+    refresh(); return;
+  }
   const name = e.target.dataset && e.target.dataset.dl; if(!name) return;
   try {
     const r = await fetch('/download/' + encodeURIComponent(name));
@@ -325,7 +336,7 @@ document.addEventListener('click', async e => {
 
 let tt; function toast(msg, kind=''){ const t = $('#toast'); t.textContent = msg; t.className = 'show ' + kind; clearTimeout(tt); tt = setTimeout(() => t.className = '', 5000); }
 
-$('#btn-status').onclick = async e => { const b = e.currentTarget; b.disabled = true; b.textContent = '⟳ Consultando…'; await refresh(); b.disabled = false; b.textContent = '⟳ Consultar estado'; toast('Estado de los nodos actualizado'); };
+$('#btn-status').onclick = async e => { const b = e.currentTarget; b.disabled = true; b.textContent = '⟳ Consultando…'; await refresh(true); b.disabled = false; b.textContent = '⟳ Consultar estado'; toast('Estado de los nodos actualizado'); };
 refresh(); setInterval(refresh, 4000);
 </script>
 </body>
