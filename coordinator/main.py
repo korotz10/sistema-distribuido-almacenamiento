@@ -67,14 +67,19 @@ def create_app(manager=None):
         services.get_nodes()
         if app.state.catalog is None:
             app.state.catalog = CatalogManager()
-        try:
-            yield
-        finally:
-            await monitor.close()
-            if inventory_task and not inventory_task.done():
-                inventory_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await inventory_task
+        with services.node_client() as sync_client:
+            async with services.node_async_client() as async_client:
+                app.state.node_sync_client = sync_client
+                app.state.node_http_client = async_client
+                monitor.client = async_client
+                try:
+                    yield
+                finally:
+                    await monitor.close()
+                    if inventory_task and not inventory_task.done():
+                        inventory_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await inventory_task
 
     app = FastAPI(title="Mini Drive Distribuido - Laboratorio", lifespan=lifespan)
     app.state.catalog = manager
@@ -101,32 +106,60 @@ def create_app(manager=None):
         return {"status": "ok", "service": "coordinator"}
 
     @app.post("/upload", status_code=201, response_model=UploadResponse)
-    def upload(file: UploadFile = File(...)):
+    async def upload(file: UploadFile = File(...)):
         try:
             name = validate_filename(file.filename or "")
-            with upload_lock:
+            while not upload_lock.acquire(blocking=False):
+                await asyncio.sleep(0.001)
+            try:
                 catalog = app.state.catalog
                 if catalog.get_file(name):
                     raise FileExists("El nombre ya existe; utiliza otro nombre")
                 content = read_upload(file.file)
                 nodes = services.get_nodes()
-                # Un intento fallido nunca reutiliza el objeto de otro intento.
                 key = make_storage_key(name)
-                confirmed, storage_ids, identities = [], set(), {}
-                for node in catalog.candidates(nodes):
-                    ready, details = services.check_node_health(node)
-                    if not ready or details["storage_id"] in storage_ids:
+                candidates = catalog.candidates(nodes)
+                checks = await asyncio.gather(
+                    *(services.probe_node(node, PROBE_TIMEOUT, app.state.node_http_client)
+                      for node in candidates)
+                )
+                available, seen_storage_ids = [], set()
+                for node, (ready, details) in zip(candidates, checks):
+                    storage_id = details.get("storage_id") if ready else None
+                    if storage_id and storage_id not in seen_storage_ids:
+                        available.append((node, storage_id))
+                        seen_storage_ids.add(storage_id)
+
+                confirmed, identities = [], {}
+                initial = available[:2]
+                results = await asyncio.gather(
+                    *(services.store_file_in_node_async(node, key, content, storage_id,
+                                                        app.state.node_http_client)
+                      for node, storage_id in initial),
+                    return_exceptions=True,
+                )
+                for (node, storage_id), result in zip(initial, results):
+                    if isinstance(result, services.NodeError):
+                        logger.warning("%s", result)
                         continue
+                    if isinstance(result, BaseException):
+                        raise result
+                    confirmed.append(node["id"])
+                    identities[node["id"]] = storage_id
+
+                for node, storage_id in available[2:]:
+                    if len(confirmed) == 2:
+                        break
                     try:
-                        services.store_file_in_node(node, key, content, details["storage_id"])
+                        await services.store_file_in_node_async(
+                            node, key, content, storage_id, app.state.node_http_client
+                        )
                     except services.NodeError as exc:
                         logger.warning("%s", exc)
                         continue
                     confirmed.append(node["id"])
-                    storage_ids.add(details["storage_id"])
-                    identities[node["id"]] = details["storage_id"]
-                    if len(confirmed) == 2:
-                        break
+                    identities[node["id"]] = storage_id
+
                 if len(confirmed) < 2:
                     log_event("error", f"'{name}' no se publicó: solo se confirmaron {len(confirmed)} de 2 copias", file=name)
                     raise HTTPException(503, "No se confirmaron dos copias; el archivo no se publicó")
@@ -142,6 +175,8 @@ def create_app(manager=None):
                         "size_bytes": record["size_bytes"], "sha256": record["sha256"],
                         "locations": {"primary": confirmed[0], "replica": confirmed[1]},
                         "status": "COMMITTED"}
+            finally:
+                upload_lock.release()
         finally:
             file.file.close()
 
@@ -168,7 +203,7 @@ def create_app(manager=None):
                     failed.append(f"{node_id} (no está configurado)")
                     continue
                 try:
-                    services.delete_file_from_node(node, record)
+                    services.delete_file_from_node(node, record, app.state.node_sync_client)
                 except services.NodeError as exc:
                     failed.append(str(exc))
                     continue
@@ -197,7 +232,9 @@ def create_app(manager=None):
             if node_id not in nodes:
                 continue
             try:
-                content = services.retrieve_file_from_node(nodes[node_id], record)
+                content = services.retrieve_file_from_node(
+                    nodes[node_id], record, app.state.node_sync_client
+                )
             except services.NodeError as exc:
                 logger.warning("%s; se intentará la siguiente copia", exc)
                 continue
@@ -245,7 +282,9 @@ def create_app(manager=None):
 
     async def read_inventory():
         nodes = services.get_nodes()
-        checks = await asyncio.gather(*(services.list_node_files(n, INVENTORY_TIMEOUT) for n in nodes))
+        checks = await asyncio.gather(
+            *(services.list_node_files(n, INVENTORY_TIMEOUT, app.state.node_http_client) for n in nodes)
+        )
         files = await asyncio.to_thread(app.state.catalog.list_files)
         names = {f["storage_key"]: f["filename"] for f in files.values()}
         checked_at = now()

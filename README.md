@@ -9,7 +9,7 @@ Mini Drive Distribuido es un servicio de almacenamiento de archivos que distribu
 Este proyecto ofrece una interfaz de almacenamiento unificada: el cliente interactúa con el coordinador, que decide dónde guardar los objetos y registra sus metadatos en un catálogo JSON.
 
 - **Transparencia de ubicación:** el cliente utiliza la API del coordinador sin seleccionar nodos.
-- **Replicación síncrona (`k = 2`):** el coordinador envía secuencialmente el objeto a dos nodos con identidades de almacenamiento distintas y registra la subida después de validar ambas confirmaciones.
+- **Replicación síncrona (`k = 2`):** el coordinador sondea los nodos en paralelo y envía las dos primeras copias elegibles concurrentemente; si una falla, prueba el siguiente nodo. Registra la subida después de validar dos confirmaciones de almacenamientos distintos.
 - **Recuperación desde réplica:** durante una descarga, si la copia principal no está disponible o no coincide con el tamaño y SHA-256 del catálogo, el coordinador intenta recuperar la réplica.
 
 ---
@@ -156,7 +156,7 @@ $env:NODE3_URL="http://IP_NODO_3:8003"
 | `PROBE_TIMEOUT` | Coordinador | `2` segundos por ronda de salud. |
 | `INVENTORY_TIMEOUT` | Coordinador | `5` segundos por consulta de inventario. |
 
-El catálogo se crea al iniciar el coordinador cuando aún no existe. Sus cambios se escriben atómicamente y el JSON se valida al leerlo. Cada nodo crea su directorio de almacenamiento y `.node.json` en su primer arranque. Cada petición a `/status` consulta los nodos en paralelo; las peticiones simultáneas comparten la ronda. El inventario físico se consulta mediante una operación independiente.
+El catálogo se crea al iniciar el coordinador cuando aún no existe. Sus cambios se escriben atómicamente y el JSON se valida al leerlo. Cada nodo crea su directorio de almacenamiento y `.node.json` en su primer arranque. El coordinador reutiliza un cliente HTTP asíncrono durante su vida para las subidas, las comprobaciones de estado y el inventario. Cada petición a `/status` consulta los nodos en paralelo; las peticiones simultáneas comparten la ronda. El inventario físico se consulta mediante una operación independiente.
 
 ---
 

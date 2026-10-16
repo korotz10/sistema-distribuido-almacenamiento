@@ -64,13 +64,16 @@ class ClusterTests(unittest.TestCase):
                 raise httpx.ReadTimeout("Confirmación de eliminación perdida", request=request)
             return httpx.Response(response.status_code, content=response.content, headers=response.headers)
 
+        async def async_route(request):
+            return route(request)
+
         def client_factory(**kwargs):
             return httpx.Client(transport=httpx.MockTransport(route), **kwargs)
 
         self.stack.enter_context(patch.object(services, "DEFAULT_NODES", NODES))
         self.stack.enter_context(patch.object(services, "client_factory", client_factory))
         self.stack.enter_context(patch.object(services, "async_client_factory",
-            lambda **kwargs: httpx.AsyncClient(transport=httpx.MockTransport(route), **kwargs)))
+            lambda **kwargs: httpx.AsyncClient(transport=httpx.MockTransport(async_route), **kwargs)))
         self.app = coordinator.create_app(self.catalog)
         self.client = self.stack.enter_context(TestClient(self.app))
 
@@ -93,6 +96,33 @@ class ClusterTests(unittest.TestCase):
             self.assertEqual(response.status_code, 201, response.text)
             self.assertEqual(response.json()["locations"], {"primary": primary, "replica": replica})
             self.assertEqual(self.copies(name), [b"original"] * 2)
+
+    def test_upload_probes_and_stores_initial_replicas_concurrently(self):
+        probes, stores = [], []
+        all_probes = asyncio.Event()
+        both_stores = asyncio.Event()
+
+        async def probe(node, timeout, client=None):
+            probes.append(node["id"])
+            if len(probes) == 3:
+                all_probes.set()
+            await asyncio.wait_for(all_probes.wait(), timeout=1)
+            return True, {"node_id": node["id"], "storage_id": f"storage-{node['id']}"}
+
+        async def store(node, key, content, storage_id, client):
+            stores.append(node["id"])
+            if len(stores) == 2:
+                both_stores.set()
+            await asyncio.wait_for(both_stores.wait(), timeout=1)
+
+        with patch.object(services, "probe_node", probe), \
+                patch.object(services, "store_file_in_node_async", store):
+            response = self.upload()
+
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(set(probes), {"node1", "node2", "node3"})
+        self.assertEqual(stores, ["node1", "node2"])
+        self.assertEqual(response.json()["locations"], {"primary": "node1", "replica": "node2"})
 
     def test_primary_failure_uses_replica_and_identifies_it(self):
         self.upload()

@@ -7,9 +7,10 @@ from coordinator import services
 
 
 class NodeMonitor:
-    def __init__(self, timeout, log_event):
+    def __init__(self, timeout, log_event, client=None):
         self.timeout = timeout
         self.log_event = log_event
+        self.client = client
         self.state = {}
         self.task = None
 
@@ -21,7 +22,7 @@ class NodeMonitor:
 
     async def _probe(self):
         nodes = services.get_nodes()
-        checks = await asyncio.gather(*(services.probe_node(n, self.timeout) for n in nodes))
+        checks = await asyncio.gather(*(services.probe_node(n, self.timeout, self.client) for n in nodes))
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         result = {}
         for node, (ready, details) in zip(nodes, checks):

@@ -1,5 +1,6 @@
 """Comunicación HTTP sencilla: solicitar, comprobar y usar la respuesta."""
 import asyncio
+from contextlib import nullcontext
 from urllib.parse import quote
 
 import httpx
@@ -34,35 +35,55 @@ def node_client():
                           headers={"Accept-Encoding": "identity"}, trust_env=False)
 
 
+def node_async_client():
+    return async_client_factory(timeout=httpx.Timeout(TIMEOUT_READ, connect=TIMEOUT_CONNECT),
+                                headers={"Accept-Encoding": "identity"}, trust_env=False)
+
+
 def valid_identity(data, node):
     return (isinstance(data, dict) and data.get("node_id") == node["id"]
             and isinstance(data.get("storage_id"), str) and bool(data["storage_id"]))
 
 
-async def read_node_json(node, path, timeout):
+async def read_node_json(node, path, timeout, client=None):
     async def request():
-        async with async_client_factory(timeout=timeout, trust_env=False,
-                                       headers={"Accept-Encoding": "identity"}) as client:
-            response = await client.get(node["url"] + path)
-            response.raise_for_status()
-            return response.json()
+        if client is None:
+            async with async_client_factory(timeout=timeout, trust_env=False,
+                                            headers={"Accept-Encoding": "identity"}) as temporary_client:
+                response = await temporary_client.get(node["url"] + path)
+        else:
+            response = await client.get(node["url"] + path, timeout=timeout)
+        response.raise_for_status()
+        return response.json()
     # Límite total, además de los tiempos de conexión/lectura del cliente.
     return await asyncio.wait_for(request(), timeout=timeout)
 
 
-async def probe_node(node, timeout):
+async def probe_node(node, timeout, client=None):
     try:
-        data = await read_node_json(node, "/health", timeout)
+        data = await read_node_json(node, "/health", timeout, client)
         valid = valid_identity(data, node) and data.get("status") == "ok"
         return valid, data if valid else {"error": "La identidad o el estado del nodo no coincide"}
     except (httpx.HTTPError, ValueError, asyncio.TimeoutError) as exc:
         return False, {"error": str(exc) or type(exc).__name__}
 
 
-def check_node_health(node):
+async def store_file_in_node_async(node, key, content, storage_id, client):
     try:
-        with node_client() as client:
-            response = client.get(node["url"] + "/health")
+        response = await client.post(node["url"] + "/store",
+                                     files={"file": (key, content)})
+        expected = {"status": "stored", "node_id": node["id"], "storage_id": storage_id,
+                    "filename": key, "size_bytes": len(content), "sha256": sha256(content)}
+        if response.status_code != 201 or response.json() != expected:
+            raise NodeError(f"{node['id']}: no confirmó una copia correcta")
+    except (httpx.HTTPError, ValueError) as exc:
+        raise NodeError(f"{node['id']}: error al enviar el archivo") from exc
+
+
+def check_node_health(node, client=None):
+    try:
+        with (node_client() if client is None else nullcontext(client)) as active_client:
+            response = active_client.get(node["url"] + "/health")
             response.raise_for_status()
             data = response.json()
         valid = (isinstance(data, dict) and data.get("status") == "ok"
@@ -73,10 +94,10 @@ def check_node_health(node):
         return False, {"error": str(exc) or type(exc).__name__}
 
 
-def store_file_in_node(node, key, content, storage_id):
+def store_file_in_node(node, key, content, storage_id, client=None):
     try:
-        with node_client() as client:
-            response = client.post(node["url"] + "/store", files={"file": (key, content)})
+        with (node_client() if client is None else nullcontext(client)) as active_client:
+            response = active_client.post(node["url"] + "/store", files={"file": (key, content)})
         expected = {"status": "stored", "node_id": node["id"], "storage_id": storage_id,
                     "filename": key, "size_bytes": len(content), "sha256": sha256(content)}
         if response.status_code != 201 or response.json() != expected:
@@ -85,11 +106,11 @@ def store_file_in_node(node, key, content, storage_id):
         raise NodeError(f"{node['id']}: error al enviar el archivo") from exc
 
 
-def retrieve_file_from_node(node, record):
+def retrieve_file_from_node(node, record, client=None):
     try:
-        with node_client() as client:
+        with (node_client() if client is None else nullcontext(client)) as active_client:
             url = node["url"] + "/retrieve/" + quote(record["storage_key"], safe="")
-            with client.stream("GET", url) as response:
+            with active_client.stream("GET", url) as response:
                 response.raise_for_status()
                 content = bytearray()
                 for chunk in response.iter_bytes(64 * 1024):
@@ -103,14 +124,14 @@ def retrieve_file_from_node(node, record):
         raise NodeError(f"{node['id']}: no se pudo recuperar el archivo") from exc
 
 
-def delete_file_from_node(node, record):
-    ready, identity = check_node_health(node)
+def delete_file_from_node(node, record, client=None):
+    ready, identity = check_node_health(node, client)
     expected_storage = record.get("storage_ids", {}).get(node["id"])
     if not ready or (expected_storage and identity["storage_id"] != expected_storage):
         raise NodeError(f"{node['id']}: no responde el almacenamiento esperado")
     try:
-        with node_client() as client:
-            response = client.delete(node["url"] + "/store/" + quote(record["storage_key"], safe=""))
+        with (node_client() if client is None else nullcontext(client)) as active_client:
+            response = active_client.delete(node["url"] + "/store/" + quote(record["storage_key"], safe=""))
             response.raise_for_status()
             data = response.json()
         if (response.status_code != 200 or not valid_identity(data, node)
@@ -122,9 +143,9 @@ def delete_file_from_node(node, record):
         raise NodeError(f"{node['id']}: no se confirmó la eliminación") from exc
 
 
-async def list_node_files(node, timeout):
+async def list_node_files(node, timeout, client=None):
     try:
-        data = await read_node_json(node, "/files", timeout)
+        data = await read_node_json(node, "/files", timeout, client)
         if not valid_identity(data, node) or not isinstance(data.get("files"), list):
             raise ValueError("Identidad o inventario incorrectos")
         keys = set()
