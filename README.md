@@ -78,7 +78,9 @@ sistema-distribuido-almacenamiento/
 │   ├── main.py                # API pública y lógica del coordinador
 │   ├── monitor.py             # Sondeo de salud de nodos
 │   ├── services.py            # Comunicación HTTP e integridad de copias
-│   └── static/index.html      # Interfaz web servida en /ui/
+│   └── static/                # Interfaz web y configuración de API para Vercel
+│       ├── config.js          # Origen configurable del coordinador
+│       └── index.html         # Interfaz servida en /ui/
 │
 ├── node/                      # Aplicación y API de los nodos de almacenamiento
 │   ├── __init__.py
@@ -150,6 +152,7 @@ $env:NODE3_URL="http://IP_NODO_3:8003"
 | `CATALOG_FILE` | Coordinador | `catalog.json` en la raíz del proyecto. |
 | `COORDINATOR_HOST`, `COORDINATOR_PORT` | Coordinador | `0.0.0.0`, `8000`. |
 | `COORDINATOR_URL` | Script de conectividad | `http://127.0.0.1:8000`. |
+| `COORDINATOR_CORS_ORIGINS` | Coordinador | Vacío; orígenes web exactos separados por comas. |
 | `NODE_ID`, `NODE_PORT`, `NODE_HOST` | Nodo | `node1`, `8001`, `0.0.0.0`; cada equipo asigna el ID y puerto correspondiente. |
 | `STORAGE_DIR` | Nodo | `storage` en la raíz del proyecto. |
 | `MAX_FILE_SIZE` | Coordinador y nodo | `10485760` bytes (10 MiB). |
@@ -209,6 +212,17 @@ Con el Coordinador en ejecución, abre `http://<IP-del-coordinador>:8000/ui` en 
 - **Eliminación:** antes de borrar, el coordinador verifica en paralelo que ambos nodos asignados estén activos y conserven la identidad de almacenamiento esperada. Si no puede verificar cualquiera de ellos, responde `503` sin iniciar el borrado y conserva el archivo como `COMMITTED`. Tras superar esa comprobación registra `DELETING` antes de modificar las copias; si una operación de borrado o la finalización del catálogo falla, el archivo queda pendiente y el botón **Reintentar eliminación** vuelve a solicitar el borrado a ambos nodos, incluso después de reiniciar. Borrar una copia ya ausente es válido. Las descargas y las subidas con ese mismo nombre quedan bloqueadas mientras está pendiente; una falla ocurrida durante la eliminación puede dejar una copia ya borrada y responder `503`.
 
 El panel actualiza al completar cada consulta y espera cinco segundos antes de iniciar otra. Las actualizaciones simultáneas se agrupan. Un error parcial se presenta como consulta incompleta. La bitácora y las fechas de observación de salud se mantienen en memoria del coordinador; las eliminaciones pendientes se guardan en el catálogo.
+
+### Despliegue estático en Vercel
+
+La carpeta `coordinator/static` contiene el frontend estático; Vercel no ejecuta desde ella el coordinador FastAPI. La instancia configurada utiliza `https://sistema-distribuido-almacenamiento-seven.vercel.app` para la interfaz y `https://laptop-b9tggef3.tail90e0be.ts.net` para la API. Para conectar ambos despliegues:
+
+1. En Vercel, establece `coordinator/static` como **Root Directory**.
+2. `config.js` define `window.COORDINATOR_API_BASE` con el origen HTTPS de la API. Vuelve a desplegar el frontend después de cambiar ese valor.
+3. El coordinador permite por defecto el origen de producción de Vercel. Para establecer otros orígenes exactos en el proceso de FastAPI, define `COORDINATOR_CORS_ORIGINS`; sepáralos por comas y reinicia el coordinador.
+4. El dominio `*.ts.net` del coordinador corresponde a Tailscale. Los navegadores que utilicen la interfaz deben tener acceso a ese coordinador en la red Tailscale. Una página HTTPS no puede llamar a una API HTTP.
+
+La configuración de API puede cambiarse para otros despliegues. Al dejar `COORDINATOR_API_BASE` vacío, la interfaz usa rutas relativas y continúa funcionando cuando FastAPI también sirve `/ui/`. CORS está limitado a los orígenes declarados; no se habilita para otros orígenes.
 
 ## 8. Contrato de API
 

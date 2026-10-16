@@ -14,6 +14,7 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 import uvicorn
@@ -83,6 +84,22 @@ def create_app(manager=None):
                             await inventory_task
 
     app = FastAPI(title="Mini Drive Distribuido - Laboratorio", lifespan=lifespan)
+    allowed_origins = [
+        origin.strip()
+        for origin in os.getenv(
+            "COORDINATOR_CORS_ORIGINS",
+            "https://sistema-distribuido-almacenamiento-seven.vercel.app",
+        ).split(",")
+        if origin.strip()
+    ]
+    if allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=allowed_origins,
+            allow_methods=["GET", "POST", "DELETE"],
+            allow_headers=["Content-Type"],
+            expose_headers=["X-Served-By", "X-Failover", "X-Storage-Node", "Content-Disposition"],
+        )
     app.state.catalog = manager
     app.state.monitor = monitor
     # Una subida a la vez: sencillo de explicar y suficiente para la demostración.

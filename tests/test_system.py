@@ -392,6 +392,27 @@ class ClusterTests(unittest.TestCase):
         nodes = self.client.get("/status").json()["nodes"]
         self.assertEqual(next(n["status"] for n in nodes if n["id"] == "node1"), "DOWN")
 
+    def test_configured_frontend_origin_can_call_api_with_cors(self):
+        origin = "https://sistema-distribuido-almacenamiento-seven.vercel.app"
+        with patch.dict(os.environ, {"COORDINATOR_CORS_ORIGINS": origin}), \
+                TestClient(coordinator.create_app(self.catalog)) as cors_client:
+            preflight = cors_client.options("/upload", headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            })
+            self.assertEqual(preflight.status_code, 200)
+            self.assertEqual(preflight.headers["access-control-allow-origin"], origin)
+            self.assertIn("POST", preflight.headers["access-control-allow-methods"])
+
+            denied = cors_client.get("/files", headers={"Origin": "https://other.example"})
+            self.assertNotIn("access-control-allow-origin", denied.headers)
+
+        with patch.dict(os.environ, {}, clear=True), \
+                TestClient(coordinator.create_app(self.catalog)) as default_client:
+            response = default_client.get("/files", headers={"Origin": origin})
+            self.assertEqual(response.headers["access-control-allow-origin"], origin)
+
     def test_corrupt_catalog_is_not_reset(self):
         self.catalog.filepath.write_text("{broken", encoding="utf-8")
         self.assertEqual(self.client.get("/files").status_code, 503)

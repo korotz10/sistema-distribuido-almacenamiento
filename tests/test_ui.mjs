@@ -14,7 +14,8 @@ function setup() {
       getBoundingClientRect: () => ({left: 0, top: 0, width: 100, bottom: 20})});
     return elements.get(selector);
   };
-  const context = vm.createContext({document: {querySelector: element, addEventListener(type, handler) {
+  const context = vm.createContext({window: {COORDINATOR_API_BASE: ''},
+    document: {querySelector: element, addEventListener(type, handler) {
     if (type === 'click') clickHandler = handler;
   }},
     location: {host: 'test.invalid'}, addEventListener() {}, confirm: () => true, AbortController, console,
@@ -77,6 +78,13 @@ await test('fallo de todas las consultas muestra desconexión y datos sin verifi
   await t.run('refresh()');
   assert.match(t.element('#conn').textContent, /Sin conexión/);
   assert.equal(t.run('fileHealth(state.files["audit.txt"]).copies'), 0);
+});
+await test('la URL base configurable se aplica a las llamadas de API', async () => {
+  const t = setup(); let requested;
+  t.context.window.COORDINATOR_API_BASE = 'https://coordinator.example/';
+  t.context.fetch = async url => { requested = url; return response({files: {}}); };
+  await t.run('j("/files")');
+  assert.equal(requested, 'https://coordinator.example/files');
 });
 await test('refrescos simultáneos comparten peticiones y no pueden retroceder', async () => {
   const t = setup(), pending = [];

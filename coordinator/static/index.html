@@ -148,7 +148,10 @@
 </main>
 <div id="toast"></div>
 
+<script src="/config.js"></script>
 <script>
+const API_BASE = (window.COORDINATOR_API_BASE || '').replace(/\/+$/, '');
+const apiUrl = path => API_BASE + path;
 const isUp = n => n.status === 'UP' || n.status === 'HEALTHY';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -162,7 +165,7 @@ async function api(url, opts={}, read=r=>r.json()){
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), opts.method ? 120000 : 15000);
   try {
-    const response = await fetch(url, {...opts, signal: controller.signal, cache: 'no-store'});
+    const response = await fetch(apiUrl(url), {...opts, signal: controller.signal, cache: 'no-store'});
     if(!response.ok){
       const body = await response.json().catch(()=>({}));
       const error = new Error(body.detail || response.statusText);
