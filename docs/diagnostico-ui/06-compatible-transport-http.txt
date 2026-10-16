@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "C:\Users\victo\AppData\Local\Temp\mini-drive-diagnostic-v9mmpcee\tests\smoke_http.py", line 166, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\victo\AppData\Local\Temp\mini-drive-diagnostic-v9mmpcee\tests\smoke_http.py", line 119, in main
+    physical = root / f"storage{node_id[-1]}" / record["storage_key"]
+                                                ~~~~~~^^^^^^^^^^^^^^^
+KeyError: 'storage_key'

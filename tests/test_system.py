@@ -1,6 +1,7 @@
 """Pruebas de los requisitos y de las protecciones básicas; todo el disco es temporal."""
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, closing
+import asyncio
 import hashlib
 import json
 import os
@@ -24,6 +25,7 @@ from fastapi.testclient import TestClient
 from common import files as file_utils
 from coordinator import main as coordinator, services
 from coordinator.catalog import CatalogError, CatalogManager
+from coordinator.monitor import NodeMonitor
 from node.main import create_app as create_node
 from scripts.migrate_catalog import migrate
 
@@ -39,12 +41,18 @@ class ClusterTests(unittest.TestCase):
         self.apps = {n["id"]: create_node(self.root / n["id"], n["id"]) for n in NODES}
         self.clients = {key: self.stack.enter_context(TestClient(app)) for key, app in self.apps.items()}
         self.down, self.store_down, self.bad_ack, self.lost_ack = set(), set(), set(), set()
+        self.bad_delete_ack, self.lost_delete_ack = set(), set()
+        self.deletions = []
 
         def route(request):
             self.assertNotIn("authorization", request.headers)
             node_id, path = request.url.host, request.url.path
             if node_id in self.down or (path == "/store" and node_id in self.store_down):
                 raise httpx.ConnectError("Nodo detenido", request=request)
+            if request.method == "DELETE":
+                self.deletions.append(node_id)
+                if node_id in self.bad_delete_ack:
+                    return httpx.Response(200, json={"unexpected": True})
             response = self.clients[node_id].request(request.method, path,
                         content=request.read(), headers=dict(request.headers))
             if path == "/store" and response.status_code == 201:
@@ -52,13 +60,17 @@ class ClusterTests(unittest.TestCase):
                     raise httpx.ReadTimeout("Respuesta perdida", request=request)
                 if node_id in self.bad_ack:
                     return httpx.Response(201, json={"sha256": "incorrect"})
-            return response
+            if request.method == "DELETE" and node_id in self.lost_delete_ack:
+                raise httpx.ReadTimeout("Confirmación de eliminación perdida", request=request)
+            return httpx.Response(response.status_code, content=response.content, headers=response.headers)
 
         def client_factory(**kwargs):
             return httpx.Client(transport=httpx.MockTransport(route), **kwargs)
 
         self.stack.enter_context(patch.object(services, "DEFAULT_NODES", NODES))
         self.stack.enter_context(patch.object(services, "client_factory", client_factory))
+        self.stack.enter_context(patch.object(services, "async_client_factory",
+            lambda **kwargs: httpx.AsyncClient(transport=httpx.MockTransport(route), **kwargs)))
         self.app = coordinator.create_app(self.catalog)
         self.client = self.stack.enter_context(TestClient(self.app))
 
@@ -221,10 +233,120 @@ class ClusterTests(unittest.TestCase):
         self.assertEqual(self.download("missing").status_code, 404)
         self.assertEqual(self.client.post("/upload").status_code, 422)
 
-    def test_api_without_keys_or_extra_endpoints(self):
+    def test_public_api_and_storage_key(self):
         self.assertEqual(self.upload().status_code, 201)
         self.assertNotIn("securitySchemes", self.app.openapi().get("components", {}))
-        self.assertEqual(set(self.app.openapi()["paths"]), {"/upload", "/download/{filename}", "/files", "/status", "/health"})
+        self.assertEqual(set(self.app.openapi()["paths"]), {"/upload", "/download/{filename}", "/files", "/status", "/health",
+            "/files/{filename}", "/events", "/catalog", "/nodes/files"})
+        record = self.client.get("/files").json()["files"]["document.txt"]
+        self.assertEqual(record["storage_key"], self.catalog.get_file("document.txt")["storage_key"])
+        self.assertTrue(record["storage_key"].endswith(".txt"))
+
+    def test_ui_is_served(self):
+        response = self.client.get("/ui")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Mini Drive Distribuido", response.text)
+
+    def test_inventory_uses_disk_before_any_health_probe(self):
+        self.upload()
+        record = self.catalog.get_file("document.txt")
+        (self.root / "node1" / record["storage_key"]).unlink()
+        (self.root / "node2" / record["storage_key"]).write_bytes(b"corrupt!")
+        (self.root / "node3" / "orphan.txt").write_bytes(b"orphan")
+        nodes = self.client.get("/nodes/files").json()["nodes"]
+        self.assertTrue(all(n["reachable"] for n in nodes.values()))
+        self.assertEqual(nodes["node1"]["files"], [])
+        self.assertEqual(nodes["node2"]["source"], "disk")
+        self.assertEqual(nodes["node2"]["files"][0]["filename"], "document.txt")
+        self.assertEqual(nodes["node2"]["files"][0]["sha256"], file_utils.sha256(b"corrupt!"))
+        self.assertNotEqual(nodes["node2"]["files"][0]["sha256"], record["sha256"])
+        self.assertEqual(nodes["node3"]["files"][0]["storage_key"], "orphan.txt")
+        self.assertEqual(self.download().status_code, 503)
+
+    def test_inventory_rejects_wrong_identity_and_unreachable_node(self):
+        self.apps["node1"].state.storage.node_id = "wrong"
+        self.down.add("node2")
+        nodes = self.client.get("/nodes/files").json()["nodes"]
+        self.assertFalse(nodes["node1"]["reachable"])
+        self.assertFalse(nodes["node2"]["reachable"])
+        self.assertTrue(nodes["node3"]["reachable"])
+
+    def test_delete_success_removes_both_copies_and_catalog(self):
+        self.upload()
+        key = self.catalog.get_file("document.txt")["storage_key"]
+        self.assertEqual(self.client.delete("/files/document.txt").status_code, 200)
+        self.assertIsNone(self.catalog.get_file("document.txt"))
+        self.assertFalse((self.root / "node1" / key).exists())
+        self.assertFalse((self.root / "node2" / key).exists())
+
+    def test_partial_delete_survives_restart_and_retries(self):
+        self.upload()
+        self.down.add("node2")
+        response = self.client.delete("/files/document.txt")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["deleted_from"], ["node1"])
+        self.assertEqual(self.catalog.get_file("document.txt")["status"], "DELETING")
+        self.assertEqual(self.download().status_code, 409)
+        self.assertEqual(self.upload().status_code, 409)
+        self.down.clear()
+        with TestClient(coordinator.create_app(CatalogManager(self.catalog.filepath))) as restarted:
+            self.assertEqual(restarted.get("/files").json()["files"]["document.txt"]["status"], "DELETING")
+            self.assertEqual(restarted.delete("/files/document.txt").status_code, 200)
+        self.assertEqual(self.deletions, ["node1", "node1", "node2"])
+
+    def test_delete_does_nothing_if_intent_cannot_be_persisted(self):
+        self.upload()
+        with patch.object(self.catalog, "_write", side_effect=CatalogError("disk error")):
+            self.assertEqual(self.client.delete("/files/document.txt").status_code, 503)
+        self.assertEqual(self.deletions, [])
+        self.assertEqual(self.copies(), [b"original"] * 2)
+        self.assertEqual(self.catalog.get_file("document.txt")["status"], "COMMITTED")
+
+    def test_delete_rechecks_legacy_per_node_progress(self):
+        self.upload()
+        data = json.loads(self.catalog.filepath.read_text(encoding="utf-8"))
+        data["files"]["document.txt"].update(status="DELETING", deleted_from=["node1", "node2"])
+        self.catalog.filepath.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(self.client.delete("/files/document.txt").status_code, 200)
+        self.assertEqual(self.deletions, ["node1", "node2"])
+
+    def test_delete_retries_both_nodes_after_catalog_finalization_failure(self):
+        self.upload()
+        with patch.object(self.catalog, "delete_file", side_effect=CatalogError("disk error")):
+            self.assertEqual(self.client.delete("/files/document.txt").status_code, 503)
+        self.assertEqual(self.catalog.get_file("document.txt")["status"], "DELETING")
+        self.down.update(("node1", "node2"))
+        self.assertEqual(self.client.delete("/files/document.txt").status_code, 503)
+        self.down.clear()
+        self.assertEqual(self.client.delete("/files/document.txt").status_code, 200)
+        self.assertEqual(self.deletions, ["node1", "node2", "node1", "node2"])
+
+    def test_delete_rejects_invalid_confirmation(self):
+        self.upload()
+        self.bad_delete_ack.update(("node1", "node2"))
+        self.assertEqual(self.client.delete("/files/document.txt").status_code, 503)
+        self.assertEqual(self.catalog.get_file("document.txt")["status"], "DELETING")
+        self.assertEqual(self.copies(), [b"original"] * 2)
+
+    def test_delete_retries_lost_confirmation(self):
+        self.upload()
+        self.lost_delete_ack.add("node1")
+        self.assertEqual(self.client.delete("/files/document.txt").status_code, 503)
+        self.lost_delete_ack.clear()
+        self.assertEqual(self.client.delete("/files/document.txt").status_code, 200)
+
+    def test_delete_rejects_replaced_storage_directory(self):
+        self.upload()
+        self.apps["node1"].state.storage.storage_id = "different-directory"
+        self.assertEqual(self.client.delete("/files/document.txt").status_code, 503)
+        self.assertNotIn("node1", self.deletions)
+
+    def test_health_is_probed_on_demand_without_cached_status(self):
+        self.assertIsNone(self.app.state.monitor.task)
+        self.assertTrue(all(n["status"] == "UP" for n in self.client.get("/status").json()["nodes"]))
+        self.down.add("node1")
+        nodes = self.client.get("/status").json()["nodes"]
+        self.assertEqual(next(n["status"] for n in nodes if n["id"] == "node1"), "DOWN")
 
     def test_corrupt_catalog_is_not_reset(self):
         self.catalog.filepath.write_text("{broken", encoding="utf-8")
@@ -307,6 +429,47 @@ class CatalogTests(unittest.TestCase):
         with patch.object(services, "DEFAULT_NODES", nodes):
             with self.assertRaises(services.NodeError):
                 services.get_nodes()
+
+
+class MonitorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_parallel_deadline_coalesces_and_cancels_requests(self):
+        started, cancelled = [], []
+        async def route(request):
+            started.append(request.url.host)
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(request.url.host)
+        monitor = NodeMonitor(0.05, lambda *a, **kw: None)
+        with patch.object(services, "DEFAULT_NODES", NODES), patch.object(services, "async_client_factory",
+                lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(route), **kw)):
+            results = await asyncio.wait_for(asyncio.gather(*(monitor.snapshot() for _ in range(20))), 2)
+            self.assertEqual(sorted(started), ["node1", "node2", "node3"])
+            self.assertEqual(sorted(cancelled), sorted(started))
+            self.assertTrue(all(n["status"] == "DOWN" for n in results[0]))
+            self.assertTrue(all(r == results[0] for r in results))
+            await monitor.snapshot()  # Una nueva petición vuelve a consultar.
+            self.assertEqual(len(started), 6)
+            await monitor.close()
+
+    async def test_close_cancels_in_flight_probe(self):
+        started = asyncio.Event()
+        cancelled = []
+        async def route(request):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(request.url.host)
+        monitor = NodeMonitor(30, lambda *a, **kw: None)
+        with patch.object(services, "DEFAULT_NODES", NODES), patch.object(services, "async_client_factory",
+                lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(route), **kw)):
+            caller = asyncio.create_task(monitor.snapshot())
+            await asyncio.wait_for(started.wait(), 2)
+            await monitor.close()
+            with self.assertRaises(asyncio.CancelledError):
+                await caller
+            self.assertEqual(sorted(cancelled), ["node1", "node2", "node3"])
 
 
 if __name__ == "__main__":

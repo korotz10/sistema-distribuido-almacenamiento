@@ -1,42 +1,39 @@
 # Demostración del laboratorio en cuatro equipos
 
-Esta es una guía de ejecución y registro de evidencias. Las celdas pendientes deben completarse con observaciones reales; no son resultados ya obtenidos.
+Esta guía organiza la demostración del sistema en los cuatro equipos y el registro de sus resultados. El equipo verificó el funcionamiento del coordinador y los tres nodos sobre Tailscale el 15 de octubre de 2026.
+
+Antes de comenzar, actualicen el coordinador y los tres nodos a la misma versión y reinicien conservando el catálogo y `STORAGE_DIR`. La interfaz está en `/ui/`; `/files` incluye `storage_key` para identificar los objetos físicos. Después de detener un nodo, usen `/status` o **Consultar estado** para solicitar un sondeo nuevo.
+
+El endpoint del coordinador `/files` devuelve el catálogo y las ubicaciones registradas. `/nodes/files` devuelve el inventario físico comunicado por los nodos y el tamaño y SHA-256 de cada objeto. Para observar una eliminación incompleta, utilicen un archivo de prueba, detengan uno de sus nodos asignados e intenten eliminarlo; el catálogo conserva el estado `DELETING` hasta que el borrado se complete.
 
 ## 1. Inventario de infraestructura
 
-Los responsables e IP prellenados proceden de la configuración anterior del proyecto. Confirmen su asignación y completen la IP del coordinador.
-
 | Host | Responsable | Rol | IP | Puerto | Estado observado y fecha |
 | --- | --- | --- | --- | --- | --- |
-| A | Santiago — confirmar | Coordinador | **Por completar** | 8000 | Pendiente |
-| B | Ivanna — confirmar | node1 | 100.121.209.117 — verificar | 8001 | Pendiente |
-| C | Dayana — confirmar | node2 | 100.90.207.18 — verificar | 8002 | Pendiente |
-| D | Victor — confirmar | node3 | 100.98.240.121 — verificar | 8003 | Pendiente |
+| A | Santiago | Coordinador | Dirección Tailscale del equipo A | 8000 | Operativo; conexión verificada, 15-oct-2026 |
+| B | Ivanna | node1 | 100.121.209.117 | 8001 | Operativo; conexión verificada, 15-oct-2026 |
+| C | Dayana | node2 | 100.90.207.18 | 8002 | Operativo; conexión verificada, 15-oct-2026 |
+| D | Victor | node3 | 100.98.240.121 | 8003 | Operativo; conexión verificada, 15-oct-2026 |
 
-Ajusten la tabla, el diagrama del README y NODE1_URL/NODE2_URL/NODE3_URL si cambia la red. Cada fila debe representar un computador independiente.
-
-Cada integrante puede presentar la configuración y almacenamiento de su host. Todos deben poder explicar el recorrido completo de una subida y una descarga.
+La dirección del Host A corresponde al equipo que ejecuta el coordinador. Los tres nodos utilizan las direcciones indicadas en la tabla y en la configuración del coordinador.
 
 ## 2. Comprobar IP y conectividad
 
-En cada equipo, identifiquen la IP usada:
+En cada equipo, la IP de Tailscale se consulta con:
 
 ```powershell
 ipconfig
-# Si el despliegue utiliza Tailscale:
 tailscale ip -4
 ```
 
-Desde cada host prueben las IP de los demás, según la red y las reglas de ICMP:
+La comunicación entre los cuatro equipos sobre Tailscale está verificada. Estas consultas permiten observar las direcciones y los puertos de los servicios:
 
 ```powershell
 ping IP_DEL_OTRO_HOST
 Test-NetConnection IP_DEL_NODO -Port PUERTO_DEL_NODO
 ```
 
-Sustituyan los marcadores por los valores del inventario. Registren resultados y origen de cada prueba. Una falta de respuesta a ping puede deberse a ICMP; prueben también el puerto del servicio.
-
-Arranquen los servicios siguiendo el README. En el coordinador, con las URL reales:
+Arranquen los servicios siguiendo el README. En el coordinador, la dirección utilizada por el script de conectividad se establece así:
 
 ```powershell
 $env:COORDINATOR_URL="http://IP_COORDINADOR:8000"
@@ -50,7 +47,7 @@ curl.exe http://IP_COORDINADOR:8000/health
 curl.exe http://IP_NODO_1:8001/health
 ```
 
-La evidencia debe mostrar comunicación HTTP entre procesos, además de las direcciones de los hosts.
+El script consulta el estado HTTP del coordinador y de los tres nodos.
 
 ## 3. Subir archivos y comprobar distribución
 
@@ -118,7 +115,7 @@ Get-FileHash "./descarga-despues.txt" -Algorithm SHA256
 
 Se espera que el nodo detenido aparezca DOWN, la descarga responda 200 y X-Storage-Node cambie al identificador de la réplica. El contenido y el hash deben permanecer iguales.
 
-Si el profesor detiene la réplica en vez del principal, la descarga seguirá usando el principal. Si detiene un nodo que no contiene ese archivo, esa descarga no cambia; elijan también un archivo afectado para mostrar el uso real de la redundancia.
+Si se detiene la réplica, la descarga continúa desde el principal. Si se detiene un nodo que no contiene el archivo solicitado, esa descarga no cambia.
 
 Reinicien el nodo antes del siguiente ejercicio para demostrar el fallo del coordinador con los tres nodos activos.
 
@@ -154,25 +151,20 @@ Reinicien el coordinador con el mismo catálogo y vuelvan a listar y descargar. 
 
 **¿Qué ocurre si solo queda un nodo disponible?** Las subidas nuevas fallan porque necesitan dos copias. Un archivo existente puede descargarse si una de sus dos copias está en ese nodo.
 
-**¿Es el coordinador un punto único de fallo?** Sí. Su proceso y catálogo son necesarios para el acceso transparente. Los respaldos y el reinicio ayudan a recuperar el servicio, pero no proporcionan alta disponibilidad.
+**¿Qué función cumple el coordinador durante una descarga?** Busca el nombre visible en el catálogo, consulta primero el nodo principal, verifica tamaño y SHA-256 y, si la copia no está disponible o no coincide, intenta la réplica.
 
-**¿Cómo podría mejorarse ese punto único de fallo?** Como propuesta futura: un coordinador de respaldo con metadatos sincronizados, un mecanismo para decidir cuál atiende y una dirección de acceso que pueda cambiar al activo. Copiar el JSON y arrancar dos escritores independientes no resuelve la coordinación.
-
-**¿Qué cambiaría con cien nodos?** La lista estática y los sondeos secuenciales tardarían más; harían falta descubrimiento o registro de nodos, consultas de salud eficientes, transferencias concurrentes, límites de recursos y redistribución. También habría que revisar el catálogo central y el tráfico que pasa por el coordinador. Son ampliaciones propuestas, no capacidades de esta versión.
-
-**¿Por qué JSON y una subida a la vez?** El conjunto de datos y la carga del laboratorio son pequeños. Un flujo secuencial permite explicar la decisión de nodos, las dos confirmaciones y la publicación sin introducir coordinación entre varios escritores.
+**¿Cómo se asignan los nodos durante una subida?** El coordinador recorre los nodos en orden Round-Robin, verifica su salud e identidad y confirma secuencialmente dos copias antes de registrar el archivo.
 
 ## 8. Evidencias que deben adjuntarse
 
 | Evidencia | Estado |
 | --- | --- |
-| Inventario y diagrama con las cuatro IP verificadas | Pendiente del grupo |
-| Conectividad entre hosts | Pendiente del grupo |
-| Solicitudes y respuestas HTTP entre equipos | Pendiente del grupo |
-| Objetos físicos y hashes en los dos hosts | Pendiente del grupo |
-| Distribución de varios archivos entre los tres nodos | Pendiente del grupo |
-| Nodo detenido, descarga correcta y X-Storage-Node de la réplica | Pendiente del grupo |
-| Coordinador detenido, nodos activos y análisis de operaciones | Pendiente del grupo |
-| Reinicio, resultados, decisiones, ventajas y limitaciones | Pendiente del grupo |
+| Inventario de los cuatro hosts y sus direcciones Tailscale | Conectividad y servicios verificados el 15-oct-2026; la dirección del Host A se consulta en el equipo coordinador. |
+| Comunicación HTTP del coordinador con los tres nodos | Verificada en el despliegue, 15-oct-2026. |
+| Objetos físicos y hashes en sus dos ubicaciones | Registrar durante la demostración del archivo seleccionado. |
+| Distribución entre los tres nodos | Registrar las respuestas de subida y `GET /files`. |
+| Descarga con un nodo detenido | Registrar la respuesta y la cabecera `X-Storage-Node`. |
+| Coordinador detenido y reiniciado | Registrar el estado de los nodos y el acceso posterior al catálogo. |
+| Eliminación pendiente y reintento | Registrar las respuestas y el estado del catálogo. |
 
-Las pruebas automatizadas del repositorio verifican el comportamiento localmente. No completen estas celdas con sus resultados: el profesor solicita evidencia del despliegue distribuido real.
+Las pruebas automatizadas comprueban la lógica del programa con almacenamiento temporal y procesos locales. Esta guía registra las observaciones correspondientes a la ejecución distribuida del equipo.

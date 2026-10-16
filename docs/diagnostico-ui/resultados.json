@@ -1,0 +1,66 @@
+{
+  "commit": "a942ed88fba8554e9e9f2af018fc7e8cb5935c7a",
+  "working_tree_status": "?? docs/diagnostico-ui/\n",
+  "ui_file_present": true,
+  "python": "3.14.2 (tags/v3.14.2:df79316, Dec  5 2025, 17:18:21) [MSC v.1944 64 bit (AMD64)]",
+  "01-original-import": {
+    "returncode": 1,
+    "command": [
+      "-c",
+      "import coordinator.main"
+    ]
+  },
+  "02-original-tests": {
+    "returncode": 1,
+    "command": [
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests",
+      "-v"
+    ]
+  },
+  "03-original-connectivity": {
+    "returncode": 1,
+    "command": [
+      "scripts/test_connectivity.py"
+    ]
+  },
+  "04-original-only-exception-shim": {
+    "returncode": 0,
+    "command": [
+      "-c",
+      "\nfrom coordinator import services\nservices.NodeError = type(\"NodeError\", (Exception,), {})\nfrom coordinator.main import app\nfrom fastapi.testclient import TestClient\nwith TestClient(app) as client:\n    for path, method in ((\"/status\", \"get\"), (\"/upload\", \"post\")):\n        try:\n            kwargs = {\"files\": {\"file\": (\"audit.txt\", b\"data\")}} if method == \"post\" else {}\n            print(path, getattr(client, method)(path, **kwargs).status_code)\n        except Exception as exc:\n            print(path, type(exc).__name__, str(exc))\n"
+    ]
+  },
+  "05-compatible-transport-tests": {
+    "returncode": 1,
+    "command": [
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests",
+      "-v"
+    ]
+  },
+  "06-compatible-transport-http": {
+    "returncode": 1,
+    "command": [
+      "tests/smoke_http.py"
+    ]
+  },
+  "07-compatible-transport-targeted": {
+    "returncode": 0,
+    "command": [
+      "diagnostic_checks.py"
+    ]
+  },
+  "09-compatible-transport-and-schema-http": {
+    "returncode": 0,
+    "command": [
+      "tests/smoke_http.py"
+    ]
+  }
+}

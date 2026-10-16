@@ -1,0 +1,26 @@
+test_system (unittest.loader._FailedTest.test_system) ... ERROR
+
+======================================================================
+ERROR: test_system (unittest.loader._FailedTest.test_system)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_system
+Traceback (most recent call last):
+  File "C:\Users\victo\AppData\Local\Python\pythoncore-3.14-64\Lib\unittest\loader.py", line 426, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "C:\Users\victo\AppData\Local\Python\pythoncore-3.14-64\Lib\unittest\loader.py", line 367, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "C:\Users\victo\AppData\Local\Temp\mini-drive-diagnostic-v9mmpcee\tests\test_system.py", line 25, in <module>
+    from coordinator import main as coordinator, services
+  File "C:\Users\victo\AppData\Local\Temp\mini-drive-diagnostic-v9mmpcee\coordinator\main.py", line 316, in <module>
+    app = create_app()
+  File "C:\Users\victo\AppData\Local\Temp\mini-drive-diagnostic-v9mmpcee\coordinator\main.py", line 139, in create_app
+    @app.exception_handler(services.NodeError)
+                           ^^^^^^^^^^^^^^^^^^
+AttributeError: module 'coordinator.services' has no attribute 'NodeError'
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.001s
+
+FAILED (errors=1)

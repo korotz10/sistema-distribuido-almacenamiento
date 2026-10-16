@@ -1,4 +1,5 @@
-"""Tres operaciones del nodo: salud, almacenamiento y recuperación."""
+"""Salud, inventario físico, almacenamiento, recuperación y eliminación."""
+import hashlib
 import json
 from pathlib import Path
 from threading import Lock
@@ -55,6 +56,20 @@ class NodeStorage:
             raise HTTPException(404, "Archivo no encontrado en este nodo")
         return path
 
+    def inventory(self):
+        files = []
+        with self.lock:
+            for path in sorted(self.directory.iterdir()):
+                if path.name.startswith(".") or path.is_symlink() or not path.is_file():
+                    continue
+                digest, size = hashlib.sha256(), 0
+                with path.open("rb") as source:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        size += len(chunk)
+                        digest.update(chunk)
+                files.append({"storage_key": path.name, "size_bytes": size, "sha256": digest.hexdigest()})
+        return {"node_id": self.node_id, "storage_id": self.storage_id, "files": files}
+
     def delete(self, filename):
         """Borra una copia. Es idempotente: si ya no está, responde 'absent' sin error."""
         if filename.startswith("."):
@@ -64,7 +79,8 @@ class NodeStorage:
             existed = path.is_file()
             if existed:
                 path.unlink()
-        return {"status": "deleted" if existed else "absent", "node_id": self.node_id, "filename": filename}
+        return {"status": "deleted" if existed else "absent", "node_id": self.node_id,
+                "storage_id": self.storage_id, "filename": filename}
 
 
 def create_router(storage):
@@ -73,6 +89,10 @@ def create_router(storage):
     @router.get("/health")
     def health():
         return storage.health()
+
+    @router.get("/files")
+    def files():
+        return storage.inventory()
 
     @router.post("/store", status_code=201)
     def store(file: UploadFile = File(...), filename: str | None = Form(None)):

@@ -1,0 +1,218 @@
+{
+  "inventory_before_first_probe": {
+    "nodes": {
+      "node1": {
+        "reachable": false,
+        "files": [
+          {
+            "filename": "audit.txt",
+            "size_bytes": 4
+          }
+        ],
+        "source": "catalog"
+      },
+      "node2": {
+        "reachable": false,
+        "files": [
+          {
+            "filename": "audit.txt",
+            "size_bytes": 4
+          }
+        ],
+        "source": "catalog"
+      },
+      "node3": {
+        "reachable": false,
+        "files": [],
+        "source": "catalog"
+      }
+    }
+  },
+  "status": {
+    "nodes": [
+      {
+        "id": "node1",
+        "name": "Nodo 1",
+        "url": "http://node1",
+        "node_id": "node1",
+        "status": "UP",
+        "details": {
+          "status": "ok",
+          "node_id": "node1",
+          "storage_id": "354f1ff811174b2ab4697f53d8b01937",
+          "storage_dir": "C:\\Users\\victo\\AppData\\Local\\Temp\\mini-drive-diagnostic-v9mmpcee\\checks-data\\node1",
+          "files_stored": 0
+        },
+        "connected_since": "2026-10-15T22:45:28+00:00",
+        "last_seen": "2026-10-15T22:45:28+00:00",
+        "down_since": null
+      },
+      {
+        "id": "node2",
+        "name": "Nodo 2",
+        "url": "http://node2",
+        "node_id": "node2",
+        "status": "UP",
+        "details": {
+          "status": "ok",
+          "node_id": "node2",
+          "storage_id": "34b6dc30bd04489c8aa5086c30166c7e",
+          "storage_dir": "C:\\Users\\victo\\AppData\\Local\\Temp\\mini-drive-diagnostic-v9mmpcee\\checks-data\\node2",
+          "files_stored": 0
+        },
+        "connected_since": "2026-10-15T22:45:28+00:00",
+        "last_seen": "2026-10-15T22:45:28+00:00",
+        "down_since": null
+      },
+      {
+        "id": "node3",
+        "name": "Nodo 3",
+        "url": "http://node3",
+        "node_id": "node3",
+        "status": "UP",
+        "details": {
+          "status": "ok",
+          "node_id": "node3",
+          "storage_id": "89a3f13242e84bfb932a5bd23269d768",
+          "storage_dir": "C:\\Users\\victo\\AppData\\Local\\Temp\\mini-drive-diagnostic-v9mmpcee\\checks-data\\node3",
+          "files_stored": 0
+        },
+        "connected_since": "2026-10-15T22:45:28+00:00",
+        "last_seen": "2026-10-15T22:45:28+00:00",
+        "down_since": null
+      }
+    ]
+  },
+  "inventory_without_physical_files": {
+    "nodes": {
+      "node1": {
+        "reachable": true,
+        "files": [
+          {
+            "filename": "audit.txt",
+            "size_bytes": 4
+          }
+        ],
+        "source": "catalog"
+      },
+      "node2": {
+        "reachable": true,
+        "files": [
+          {
+            "filename": "audit.txt",
+            "size_bytes": 4
+          }
+        ],
+        "source": "catalog"
+      },
+      "node3": {
+        "reachable": true,
+        "files": [],
+        "source": "catalog"
+      }
+    }
+  },
+  "download_without_physical_files": 503,
+  "public_file_record": {
+    "filename": "audit.txt",
+    "size_bytes": 4,
+    "sha256": "3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7",
+    "primary_node": "node1",
+    "replica_node": "node2",
+    "status": "COMMITTED",
+    "created_at": "2026-10-15T00:00:00Z"
+  },
+  "node_inventory_endpoint": 404,
+  "ui": {
+    "status": 200,
+    "contains_title": true
+  },
+  "partial_delete": {
+    "status": 503,
+    "body": {
+      "detail": "No se eliminó el archivo; falló: node2 (no responde). Sigue en el catálogo: reintenta cuando el nodo esté activo."
+    },
+    "node1_exists": false,
+    "node2_exists": true,
+    "still_in_catalog": true,
+    "inventory": {
+      "nodes": {
+        "node1": {
+          "reachable": true,
+          "files": [
+            {
+              "filename": "audit.txt",
+              "size_bytes": 4
+            }
+          ],
+          "source": "catalog"
+        },
+        "node2": {
+          "reachable": true,
+          "files": [
+            {
+              "filename": "audit.txt",
+              "size_bytes": 4
+            }
+          ],
+          "source": "catalog"
+        },
+        "node3": {
+          "reachable": true,
+          "files": [],
+          "source": "catalog"
+        }
+      }
+    }
+  },
+  "delete_retry": 200,
+  "delete_invalid_ack": {
+    "status": 200,
+    "still_in_catalog": false,
+    "node1_exists": true,
+    "node2_exists": true
+  },
+  "probe_timeout": {
+    "elapsed_seconds": 0.127,
+    "timeout_per_future": 0.04,
+    "body": {
+      "nodes": [
+        {
+          "id": "node1",
+          "name": "Nodo 1",
+          "url": "http://node1",
+          "node_id": "node1",
+          "status": "DOWN",
+          "details": null,
+          "connected_since": null,
+          "last_seen": "2026-10-15T22:45:28+00:00",
+          "down_since": "2026-10-15T22:45:29+00:00"
+        },
+        {
+          "id": "node2",
+          "name": "Nodo 2",
+          "url": "http://node2",
+          "node_id": "node2",
+          "status": "DOWN",
+          "details": null,
+          "connected_since": null,
+          "last_seen": "2026-10-15T22:45:28+00:00",
+          "down_since": "2026-10-15T22:45:29+00:00"
+        },
+        {
+          "id": "node3",
+          "name": "Nodo 3",
+          "url": "http://node3",
+          "node_id": "node3",
+          "status": "DOWN",
+          "details": null,
+          "connected_since": null,
+          "last_seen": "2026-10-15T22:45:28+00:00",
+          "down_since": "2026-10-15T22:45:29+00:00"
+        }
+      ]
+    }
+  }
+}
+node1: no se pudo recuperar el archivo; se intentará la siguiente copia
+node2: no se pudo recuperar el archivo; se intentará la siguiente copia

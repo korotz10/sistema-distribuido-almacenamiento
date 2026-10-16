@@ -1,0 +1,122 @@
+test_corrupt_json_blocks_initialization (test_system.CatalogTests.test_corrupt_json_blocks_initialization) ... ok
+test_duplicate_urls_rejected (test_system.CatalogTests.test_duplicate_urls_rejected) ... ok
+test_existing_sqlite_requires_explicit_migration (test_system.CatalogTests.test_existing_sqlite_requires_explicit_migration) ... ok
+test_legacy_json_keeps_physical_filename (test_system.CatalogTests.test_legacy_json_keeps_physical_filename) ... ok
+test_new_catalog_initializes_without_template (test_system.CatalogTests.test_new_catalog_initializes_without_template) ... ok
+test_sqlite_export_preserves_mapping_and_source (test_system.CatalogTests.test_sqlite_export_preserves_mapping_and_source) ... ok
+test_storage_directory_keeps_its_identity (test_system.CatalogTests.test_storage_directory_keeps_its_identity) ... C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\fastapi\routing.py:211: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead
+  is_coroutine = asyncio.iscoroutinefunction(dependant.call)
+ok
+test_alternative_node_when_a_node_is_down (test_system.ClusterTests.test_alternative_node_when_a_node_is_down) ... C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\starlette\_utils.py:42: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead
+  return asyncio.iscoroutinefunction(obj) or (
+C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\starlette\_utils.py:43: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead
+  callable(obj) and asyncio.iscoroutinefunction(obj.__call__)
+C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\httpx\_client.py:680: DeprecationWarning: The 'app' shortcut is now deprecated. Use the explicit style 'transport=WSGITransport(app=...)' instead.
+  warnings.warn(message, DeprecationWarning)
+ok
+test_api_without_keys_or_extra_endpoints (test_system.ClusterTests.test_api_without_keys_or_extra_endpoints) ... C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\anyio\streams\memory.py:321: ResourceWarning: Unclosed <MemoryObjectSendStream at 22537906990>
+  warnings.warn(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\anyio\streams\memory.py:190: ResourceWarning: Unclosed <MemoryObjectReceiveStream at 22537907390>
+  warnings.warn(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\anyio\streams\memory.py:321: ResourceWarning: Unclosed <MemoryObjectSendStream at 22537913950>
+  warnings.warn(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\anyio\streams\memory.py:190: ResourceWarning: Unclosed <MemoryObjectReceiveStream at 22537913a80>
+  warnings.warn(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\anyio\streams\memory.py:321: ResourceWarning: Unclosed <MemoryObjectSendStream at 22537adc290>
+  warnings.warn(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\anyio\streams\memory.py:190: ResourceWarning: Unclosed <MemoryObjectReceiveStream at 22537adc3b0>
+  warnings.warn(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\anyio\streams\memory.py:321: ResourceWarning: Unclosed <MemoryObjectSendStream at 22537a55e10>
+  warnings.warn(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\anyio\streams\memory.py:190: ResourceWarning: Unclosed <MemoryObjectReceiveStream at 22537a55f20>
+  warnings.warn(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+FAIL
+test_bad_ack_is_not_counted_as_a_copy (test_system.ClusterTests.test_bad_ack_is_not_counted_as_a_copy) ... node1: no confirmó una copia correcta
+node2: no confirmó una copia correcta
+node3: no confirmó una copia correcta
+ok
+test_both_copies_down (test_system.ClusterTests.test_both_copies_down) ... node1: no se pudo recuperar el archivo; se intentará la siguiente copia
+node2: no se pudo recuperar el archivo; se intentará la siguiente copia
+ok
+test_catalog_survives_restart (test_system.ClusterTests.test_catalog_survives_restart) ... C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\anyio\streams\memory.py:321: ResourceWarning: Unclosed <MemoryObjectSendStream at 22537bd6eb0>
+  warnings.warn(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\anyio\streams\memory.py:190: ResourceWarning: Unclosed <MemoryObjectReceiveStream at 22537bd6f20>
+  warnings.warn(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\anyio\streams\memory.py:321: ResourceWarning: Unclosed <MemoryObjectSendStream at 22538be5370>
+  warnings.warn(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\anyio\streams\memory.py:190: ResourceWarning: Unclosed <MemoryObjectReceiveStream at 22538be53d0>
+  warnings.warn(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\anyio\streams\memory.py:321: ResourceWarning: Unclosed <MemoryObjectSendStream at 22538be5970>
+  warnings.warn(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\anyio\streams\memory.py:190: ResourceWarning: Unclosed <MemoryObjectReceiveStream at 22538be59d0>
+  warnings.warn(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\anyio\streams\memory.py:321: ResourceWarning: Unclosed <MemoryObjectSendStream at 22538be61b0>
+  warnings.warn(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\victo\Principal\Sistemas Distribuidos\sistema-distribuido-almacenamiento\venv\Lib\site-packages\anyio\streams\memory.py:190: ResourceWarning: Unclosed <MemoryObjectReceiveStream at 22538be6210>
+  warnings.warn(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_concurrent_different_names_are_kept (test_system.ClusterTests.test_concurrent_different_names_are_kept) ... ok
+test_concurrent_duplicate_has_only_one_success (test_system.ClusterTests.test_concurrent_duplicate_has_only_one_success) ... ok
+test_corrupt_catalog_is_not_reset (test_system.ClusterTests.test_corrupt_catalog_is_not_reset) ... Catálogo: No se puede leer el catálogo; el archivo original se conserva
+ok
+test_corruption_uses_replica (test_system.ClusterTests.test_corruption_uses_replica) ... node1: contenido incorrecto; se intentará la siguiente copia
+node1: contenido incorrecto; se intentará la siguiente copia
+node2: contenido incorrecto; se intentará la siguiente copia
+ok
+test_distribution_and_real_replicas (test_system.ClusterTests.test_distribution_and_real_replicas) ... ok
+test_duplicate_name_preserves_original (test_system.ClusterTests.test_duplicate_name_preserves_original) ... ok
+test_empty_file (test_system.ClusterTests.test_empty_file) ... ok
+test_failed_catalog_write_does_not_lose_previous_entries (test_system.ClusterTests.test_failed_catalog_write_does_not_lose_previous_entries) ... ok
+test_failure_after_health_uses_alternative (test_system.ClusterTests.test_failure_after_health_uses_alternative) ... node1: error al enviar el archivo
+ok
+test_invalid_names (test_system.ClusterTests.test_invalid_names) ... ok
+test_lost_ack_can_use_other_two_nodes (test_system.ClusterTests.test_lost_ack_can_use_other_two_nodes) ... node1: error al enviar el archivo
+ok
+test_missing_file_and_missing_form (test_system.ClusterTests.test_missing_file_and_missing_form) ... ok
+test_no_cross_process_control_folders (test_system.ClusterTests.test_no_cross_process_control_folders) ... ok
+test_node_object_cannot_be_replaced (test_system.ClusterTests.test_node_object_cannot_be_replaced) ... ok
+test_one_copy_does_not_publish_and_retry_uses_new_key (test_system.ClusterTests.test_one_copy_does_not_publish_and_retry_uses_new_key) ... node2: error al enviar el archivo
+node3: error al enviar el archivo
+ok
+test_primary_failure_uses_replica_and_identifies_it (test_system.ClusterTests.test_primary_failure_uses_replica_and_identifies_it) ... node1: no se pudo recuperar el archivo; se intentará la siguiente copia
+ok
+test_replica_failure_preserves_primary_download (test_system.ClusterTests.test_replica_failure_preserves_primary_download) ... ok
+test_same_storage_is_not_counted_twice (test_system.ClusterTests.test_same_storage_is_not_counted_twice) ... ok
+test_size_limit_on_coordinator_and_node (test_system.ClusterTests.test_size_limit_on_coordinator_and_node) ... ok
+test_status_and_coordinator_health_are_separate (test_system.ClusterTests.test_status_and_coordinator_health_are_separate) ... ok
+test_unicode_and_url_characters (test_system.ClusterTests.test_unicode_and_url_characters) ... ok
+test_wrong_identity_is_rejected (test_system.ClusterTests.test_wrong_identity_is_rejected) ... ok
+
+======================================================================
+FAIL: test_api_without_keys_or_extra_endpoints (test_system.ClusterTests.test_api_without_keys_or_extra_endpoints)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\victo\AppData\Local\Temp\mini-drive-diagnostic-v9mmpcee\tests\test_system.py", line 227, in test_api_without_keys_or_extra_endpoints
+    self.assertEqual(set(self.app.openapi()["paths"]), {"/upload", "/download/{filename}", "/files", "/status", "/health"})
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Items in the first set but not the second:
+'/nodes/files'
+'/catalog'
+'/files/{filename}'
+'/events'
+
+----------------------------------------------------------------------
+Ran 34 tests in 2.440s
+
+FAILED (failures=1)

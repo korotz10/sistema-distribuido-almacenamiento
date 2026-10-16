@@ -1,19 +1,17 @@
 """Servicio único del laboratorio: subir, listar y descargar con réplica."""
 import asyncio
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 import logging
+import math
 import os
 from pathlib import Path
 import re
-import time
 from threading import Lock
 from urllib.parse import quote
 from uuid import uuid4
 
-import httpx
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -23,15 +21,17 @@ from common.config import COORDINATOR_HOST, COORDINATOR_PORT
 from common.files import read_upload, sha256, validate_filename
 from common.schemas import FileListResponse, UploadResponse
 from coordinator.catalog import CatalogError, CatalogManager, FileExists
+from coordinator.monitor import NodeMonitor
 from coordinator import services
 
 logger = logging.getLogger(__name__)
 
-# Segundos entre sondeos automáticos de los nodos (0 = desactivado). Alimenta la interfaz web.
-PROBE_INTERVAL = float(os.getenv("PROBE_INTERVAL", "5"))
 # Máximo de espera por la respuesta de salud de un nodo. Un nodo que no contesta en este
 # tiempo se marca DOWN sin hacer esperar a los demás ni a la interfaz.
 PROBE_TIMEOUT = float(os.getenv("PROBE_TIMEOUT", "2"))
+INVENTORY_TIMEOUT = float(os.getenv("INVENTORY_TIMEOUT", "5"))
+if any(not math.isfinite(v) or v <= 0 for v in (PROBE_TIMEOUT, INVENTORY_TIMEOUT)):
+    raise ValueError("Los tiempos máximos deben ser positivos y finitos")
 
 
 def make_storage_key(name):
@@ -42,7 +42,7 @@ def make_storage_key(name):
     if re.fullmatch(r"\.[a-z0-9]{1,10}", suffix):
         try:
             return validate_filename(key + suffix)
-        except Exception:
+        except HTTPException:
             pass  # si el nombre no es válido para el nodo, se usa la clave sin extensión
     return key
 
@@ -50,80 +50,35 @@ def make_storage_key(name):
 def create_app(manager=None):
     # --- Monitoreo para la interfaz web (bitácora y estado de conexión de los nodos) ---
     events = deque(maxlen=200)
-    node_state = {}
-    state_lock = Lock()
+    events_lock = Lock()
+    inventory_task = None
 
     def now():
         return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     def log_event(kind, message, **extra):
-        events.appendleft({"time": now(), "type": kind, "message": message, **extra})
+        with events_lock:
+            events.appendleft({"time": now(), "type": kind, "message": message, **extra})
 
-    probe_pool = ThreadPoolExecutor(max_workers=8)
-    probe_lock = Lock()
-
-    def probe_nodes():
-        """Sondea todos los nodos en paralelo (con tiempo máximo), actualiza cuándo se conectaron
-        o cayeron y devuelve su estado. Solo un sondeo a la vez: nunca se acumulan."""
-        with probe_lock:
-            nodes = services.get_nodes()
-            futures = [probe_pool.submit(services.check_node_health, n) for n in nodes]
-            checks = []
-            for fut in futures:
-                try:
-                    checks.append(fut.result(timeout=PROBE_TIMEOUT))
-                except Exception:  # sin respuesta a tiempo = caído
-                    checks.append((False, None))
-            out = []
-            with state_lock:
-                for node, (ready, details) in zip(nodes, checks):
-                    st = node_state.setdefault(node["id"], {"alive": None, "connected_since": None, "last_seen": None,
-                                                            "down_since": None, "details": None, "checked": 0.0})
-                    if ready:
-                        if st["alive"] is not True:
-                            st["connected_since"], st["down_since"] = now(), None
-                            log_event("node", f"{node['id']} conectado", node=node["id"])
-                        st["last_seen"] = now()
-                    elif st["alive"] is not False:
-                        st["down_since"] = now()
-                        log_event("node", f"{node['id']} dejó de responder", node=node["id"])
-                    st["alive"], st["details"], st["checked"] = bool(ready), details, time.monotonic()
-                    out.append((node, ready, details, dict(st)))
-            return out
-
-    def status_snapshot(force=False):
-        """Estado de los nodos. Usa el último sondeo automático (instantáneo) y solo consulta
-        a los nodos si se pide explícitamente, si el sondeo está desactivado o si está vencido."""
-        nodes = services.get_nodes()
-        max_age = max(PROBE_INTERVAL * 2, 2.0)
-        with state_lock:
-            fresh = all(n["id"] in node_state and time.monotonic() - node_state[n["id"]]["checked"] <= max_age
-                        for n in nodes)
-            if fresh and not force and PROBE_INTERVAL > 0:
-                return [(n, node_state[n["id"]]["alive"], node_state[n["id"]]["details"], dict(node_state[n["id"]]))
-                        for n in nodes]
-        return probe_nodes()
-
-    async def probe_loop():
-        while True:
-            try:
-                await asyncio.to_thread(probe_nodes)
-            except Exception as exc:
-                logger.warning("Error sondeando nodos: %s", exc)
-            await asyncio.sleep(PROBE_INTERVAL)
+    monitor = NodeMonitor(PROBE_TIMEOUT, log_event)
 
     @asynccontextmanager
     async def lifespan(app):
         services.get_nodes()
         if app.state.catalog is None:
             app.state.catalog = CatalogManager()
-        task = asyncio.create_task(probe_loop()) if PROBE_INTERVAL > 0 else None
-        yield
-        if task:
-            task.cancel()
+        try:
+            yield
+        finally:
+            await monitor.close()
+            if inventory_task and not inventory_task.done():
+                inventory_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await inventory_task
 
     app = FastAPI(title="Mini Drive Distribuido - Laboratorio", lifespan=lifespan)
     app.state.catalog = manager
+    app.state.monitor = monitor
     # Una subida a la vez: sencillo de explicar y suficiente para la demostración.
     upload_lock = Lock()
 
@@ -157,7 +112,7 @@ def create_app(manager=None):
                 nodes = services.get_nodes()
                 # Un intento fallido nunca reutiliza el objeto de otro intento.
                 key = make_storage_key(name)
-                confirmed, storage_ids = [], set()
+                confirmed, storage_ids, identities = [], set(), {}
                 for node in catalog.candidates(nodes):
                     ready, details = services.check_node_health(node)
                     if not ready or details["storage_id"] in storage_ids:
@@ -169,6 +124,7 @@ def create_app(manager=None):
                         continue
                     confirmed.append(node["id"])
                     storage_ids.add(details["storage_id"])
+                    identities[node["id"]] = details["storage_id"]
                     if len(confirmed) == 2:
                         break
                 if len(confirmed) < 2:
@@ -177,6 +133,7 @@ def create_app(manager=None):
                 record = {"filename": name, "storage_key": key, "size_bytes": len(content),
                           "sha256": sha256(content), "primary_node": confirmed[0],
                           "replica_node": confirmed[1], "status": "COMMITTED",
+                          "storage_ids": identities,
                           "created_at": datetime.now(timezone.utc).isoformat()}
                 catalog.add_file(record, len(nodes))
                 log_event("upload", f"'{name}' guardado en {confirmed[0]} (principal) y {confirmed[1]} (réplica)",
@@ -194,7 +151,7 @@ def create_app(manager=None):
 
     @app.delete("/files/{filename}")
     def delete_file(filename: str):
-        """Elimina el archivo de los dos nodos y, solo si ambos confirman, del catálogo."""
+        """Persiste la eliminación pendiente y permite reintentar después de cualquier fallo."""
         validate_filename(filename)
         with upload_lock:  # no se mezcla con una subida del mismo nombre
             catalog = app.state.catalog
@@ -202,6 +159,8 @@ def create_app(manager=None):
             if not record:
                 raise HTTPException(404, "Archivo no encontrado en el catálogo")
             nodes = {node["id"]: node for node in services.get_nodes()}
+            record = catalog.begin_delete(filename)
+            # Reintentar ambas copias es seguro: borrar un objeto ausente también confirma.
             deleted, failed = [], []
             for node_id in (record["primary_node"], record["replica_node"]):
                 node = nodes.get(node_id)
@@ -209,18 +168,18 @@ def create_app(manager=None):
                     failed.append(f"{node_id} (no está configurado)")
                     continue
                 try:
-                    response = httpx.delete(f"{node['url']}/store/{quote(record['storage_key'], safe='')}",
-                                            timeout=httpx.Timeout(5.0, connect=3.0))
-                    if response.status_code == 200:
-                        deleted.append(node_id)
-                    else:
-                        failed.append(f"{node_id} (respondió {response.status_code}; ¿tiene el node/router.py actualizado?)")
-                except httpx.HTTPError:
-                    failed.append(f"{node_id} (no responde)")
+                    services.delete_file_from_node(node, record)
+                except services.NodeError as exc:
+                    failed.append(str(exc))
+                    continue
+                deleted.append(node_id)
             if failed:
                 log_event("error", f"No se eliminó '{filename}' del todo: falló {', '.join(failed)}", file=filename)
-                raise HTTPException(503, "No se eliminó el archivo; falló: " + "; ".join(failed)
-                                    + ". Sigue en el catálogo: reintenta cuando el nodo esté activo.")
+                return JSONResponse(status_code=503, content={
+                    "detail": "Eliminación pendiente: pueden haberse borrado copias. Reintenta para completarla. " + "; ".join(failed),
+                    "status": "DELETING", "deleted_from": deleted,
+                    "pending_nodes": [n for n in (record["primary_node"], record["replica_node"]) if n not in deleted],
+                })
             catalog.delete_file(filename)
             log_event("delete", f"'{filename}' eliminado de {record['primary_node']} y {record['replica_node']}", file=filename)
             return {"message": "Archivo eliminado de los dos nodos", "filename": filename, "deleted_from": deleted}
@@ -231,6 +190,8 @@ def create_app(manager=None):
         record = app.state.catalog.get_file(filename)
         if not record:
             raise HTTPException(404, "Archivo no encontrado en el catálogo")
+        if record["status"] == "DELETING":
+            raise HTTPException(409, "El archivo tiene una eliminación pendiente; reintenta eliminarlo")
         nodes = {node["id"]: node for node in services.get_nodes()}
         for node_id in (record["primary_node"], record["replica_node"]):
             if node_id not in nodes:
@@ -243,7 +204,7 @@ def create_app(manager=None):
             logger.info("Descarga de %s desde %s", filename, node_id)
             failover = node_id != record["primary_node"]
             if failover:
-                log_event("failover", f"FAILOVER: {record['primary_node']} no respondió, '{filename}' servido por la réplica {node_id}",
+                log_event("failover", f"FAILOVER: copia principal no disponible o inválida, '{filename}' servido por la réplica {node_id}",
                           file=filename, served_by=node_id, failed=record["primary_node"])
             else:
                 log_event("download", f"'{filename}' servido por {node_id} (principal)", file=filename, served_by=node_id)
@@ -258,19 +219,14 @@ def create_app(manager=None):
         raise HTTPException(503, "Ninguna de las dos copias está disponible y es válida")
 
     @app.get("/status")
-    def status(refresh: bool = False):
-        result = []
-        for node, ready, details, st in status_snapshot(force=refresh):
-            result.append({**node, "node_id": node["id"], "status": "UP" if ready else "DOWN", "details": details,
-                           "connected_since": st["connected_since"] if ready else None,
-                           "last_seen": st["last_seen"],
-                           "down_since": None if ready else st["down_since"]})
-        return {"nodes": result}
+    async def status():
+        return {"nodes": await monitor.snapshot()}
 
     # --- Endpoints de apoyo a la interfaz web ---
     @app.get("/events")
     def get_events():
-        return {"events": list(events)}
+        with events_lock:
+            return {"events": list(events)}
 
     @app.get("/catalog")
     def catalog_info():
@@ -287,19 +243,22 @@ def create_app(manager=None):
             logger.debug("No se pudo calcular el próximo turno: %s", exc)
         return info
 
+    async def read_inventory():
+        nodes = services.get_nodes()
+        checks = await asyncio.gather(*(services.list_node_files(n, INVENTORY_TIMEOUT) for n in nodes))
+        files = await asyncio.to_thread(app.state.catalog.list_files)
+        names = {f["storage_key"]: f["filename"] for f in files.values()}
+        checked_at = now()
+        return {"nodes": {n["id"]: {**check, "checked_at": checked_at,
+                    "files": [{**item, "filename": names.get(item["storage_key"], item["storage_key"])}
+                              for item in check["files"]]} for n, check in zip(nodes, checks)}}
+
     @app.get("/nodes/files")
-    def nodes_files():
-        """Qué copia debe tener cada nodo según el catálogo (los nodos guardan por storage_key)."""
-        files = app.state.catalog.list_files()
-        with state_lock:
-            alive = {k: v["alive"] is True for k, v in node_state.items()}
-        result = {}
-        for node in services.get_nodes():
-            nid = node["id"]
-            items = [{"filename": f["filename"], "size_bytes": f.get("size_bytes", 0)}
-                     for f in files.values() if nid in (f["primary_node"], f["replica_node"])]
-            result[nid] = {"reachable": alive.get(nid, False), "files": items, "source": "catalog"}
-        return {"nodes": result}
+    async def nodes_files():
+        nonlocal inventory_task
+        if inventory_task is None or inventory_task.done():
+            inventory_task = asyncio.create_task(read_inventory())
+        return await asyncio.shield(inventory_task)
 
     # --- Interfaz web: http://<coordinador>:8000/ui ---
     ui_dir = Path(__file__).resolve().parent / "static"

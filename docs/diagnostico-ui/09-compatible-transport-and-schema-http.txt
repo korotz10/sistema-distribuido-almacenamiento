@@ -1,0 +1,2 @@
+HTTP local: copias físicas, Unicode, hash, réplica tras caída, fallo del coordinador y reinicio con JSON OK
+La entrega requiere repetir la demostración en cuatro equipos independientes.

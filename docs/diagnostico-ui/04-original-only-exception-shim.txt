@@ -1,0 +1,7 @@
+/status TypeError cannot unpack non-iterable coroutine object
+/upload TypeError cannot unpack non-iterable coroutine object
+C:\Users\victo\AppData\Local\Temp\mini-drive-diagnostic-v9mmpcee\coordinator\main.py:162: RuntimeWarning: coroutine 'check_node_health' was never awaited
+  ready, details = services.check_node_health(node)
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+<sys>:0: RuntimeWarning: coroutine 'check_node_health' was never awaited
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback

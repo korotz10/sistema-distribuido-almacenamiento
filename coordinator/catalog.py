@@ -32,7 +32,7 @@ class CatalogManager:
             raise ValueError("Estructura de catálogo incorrecta")
         for name, record in data["files"].items():
             if (not isinstance(record, dict) or record.get("filename") != name
-                    or record.get("status") != "COMMITTED"
+                    or record.get("status") not in ("COMMITTED", "DELETING")
                     or type(record.get("size_bytes")) is not int or record["size_bytes"] < 0
                     or not isinstance(record.get("sha256"), str) or len(record["sha256"]) != 64
                     or any(char not in "0123456789abcdef" for char in record["sha256"])
@@ -45,6 +45,11 @@ class CatalogManager:
             record.setdefault("storage_key", name)
             if not isinstance(record["storage_key"], str) or not record["storage_key"]:
                 raise ValueError("Identificador físico incorrecto")
+            locations = {record["primary_node"], record["replica_node"]}
+            identities = record.get("storage_ids", {})
+            if (not isinstance(identities, dict)
+                    or any(n not in locations or not isinstance(s, str) or not s for n, s in identities.items())):
+                raise ValueError("Estado de las copias incorrecto")
         return data
 
     def _read(self):
@@ -76,8 +81,11 @@ class CatalogManager:
         """Quita un archivo del catálogo y devuelve su registro (None si no existía)."""
         with self.lock:
             data = self._read()
-            record = data["files"].pop(filename, None)
+            record = data["files"].get(filename)
             if record is not None:
+                if record["status"] != "DELETING":
+                    raise CatalogError("El archivo no tiene una eliminación pendiente")
+                del data["files"][filename]
                 self._write(data)
             return record
 
@@ -89,3 +97,13 @@ class CatalogManager:
             data["files"][record["filename"]] = record
             data["round_robin_index"] = (data["round_robin_index"] + 1) % node_count
             self._write(data)
+
+    def begin_delete(self, filename):
+        """Persistir la intención antes de modificar cualquier copia física."""
+        with self.lock:
+            data = self._read()
+            record = data["files"][filename]
+            if record["status"] != "DELETING":
+                record["status"] = "DELETING"
+                self._write(data)
+            return record

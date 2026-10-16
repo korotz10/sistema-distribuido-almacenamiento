@@ -1,23 +1,8 @@
 """
 Modelos de datos Pydantic compartidos para la API.
 """
-from typing import Dict, List, Optional
-from pydantic import BaseModel
-
-
-# --- Respuestas Internas del Nodo ---
-class HealthResponse(BaseModel):
-    status: str
-    node_id: str
-    files_stored: int
-
-
-class StoreResponse(BaseModel):
-    status: str
-    node_id: str
-    filename: str
-    size_bytes: int
-    sha256: str
+from typing import Dict
+from pydantic import BaseModel, Field
 
 
 # --- Respuestas Públicas del Coordinador ---
@@ -37,28 +22,15 @@ class UploadResponse(BaseModel):
 
 class FileInfo(BaseModel):
     filename: str
+    storage_key: str
     size_bytes: int
     sha256: str
     primary_node: str
     replica_node: str
     status: str
     created_at: str
+    storage_ids: Dict[str, str] = Field(default_factory=dict)
 
 
 class FileListResponse(BaseModel):
     files: Dict[str, FileInfo]
-
-
-class NodeStatus(BaseModel):
-    node_id: str
-    name: str
-    url: str
-    status: str
-    details: Optional[Dict] = None
-    connected_since: Optional[str] = None  # desde cuándo está conectado (ISO)
-    last_seen: Optional[str] = None        # última respuesta exitosa (ISO)
-    down_since: Optional[str] = None       # desde cuándo no responde (ISO)
-
-
-class NetworkStatusResponse(BaseModel):
-    nodes: List[NodeStatus]

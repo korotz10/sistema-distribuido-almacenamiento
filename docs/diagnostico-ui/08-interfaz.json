@@ -1,0 +1,13 @@
+{
+  "snapshot": "a942ed8:coordinator/static/index.html (archivo ausente del directorio de trabajo)",
+  "catalog_only_health": {
+    "p": true,
+    "r": true,
+    "copies": 2,
+    "label": "Replicado 2/2",
+    "cls": "b-ok"
+  },
+  "status_failure_badge": "● Sin conexión con el coordinador",
+  "after_newer_response": "new",
+  "after_older_response": "old"
+}

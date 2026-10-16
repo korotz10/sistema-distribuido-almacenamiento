@@ -103,7 +103,7 @@
     <div class="stat"><b id="s-nodes">–</b><span>Nodos activos</span></div>
     <div class="stat"><b id="s-files">–</b><span>Archivos</span></div>
     <div class="stat"><b id="s-bytes">–</b><span>Datos lógicos</span></div>
-    <div class="stat"><b id="s-health">–</b><span>Archivos íntegros</span></div>
+    <div class="stat"><b id="s-health">–</b><span>Dos copias verificadas</span></div>
   </div>
   <div id="conn" class="badge b-mute">conectando…</div>
 </header>
@@ -158,50 +158,99 @@ const when = iso => { if(!iso) return '—'; const d = new Date(iso); return isN
 let state = { status: [], files: {}, real: {}, events: [], cat: null };
 let highlight = { p: null, r: null, until: 0 };
 
-async function j(url, opts){ const r = await fetch(url, opts); if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText); return r.json(); }
+async function api(url, opts={}, read=r=>r.json()){
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), opts.method ? 120000 : 15000);
+  try {
+    const response = await fetch(url, {...opts, signal: controller.signal, cache: 'no-store'});
+    if(!response.ok){
+      const body = await response.json().catch(()=>({}));
+      const error = new Error(body.detail || response.statusText);
+      error.httpStatus = response.status; throw error;
+    }
+    return {response, data: await read(response)};
+  } catch(error){
+    if(error.name === 'AbortError') throw new Error(opts.method
+      ? 'Se agotó el tiempo de espera. Consulta el catálogo antes de reintentar: la operación puede seguir en curso.'
+      : 'Se agotó el tiempo de espera');
+    throw error;
+  } finally { clearTimeout(timeout); }
+}
+async function j(url, opts){ return (await api(url, opts)).data; }
 
-async function refresh(force){
-  const calls = { status: force ? '/status?refresh=true' : '/status', files: '/files', real: '/nodes/files', events: '/events', cat: '/catalog' };
+let refreshing = null, queuedForce = false;
+function refresh(force=false){
+  if(refreshing){ queuedForce ||= !!force; return refreshing; }
+  refreshing = (async () => {
+    let success;
+    do {
+      queuedForce = false;
+      success = await refreshOnce();
+      force = queuedForce;
+    } while(force);
+    return success;
+  })().finally(() => { refreshing = null; });
+  return refreshing;
+}
+
+async function refreshOnce(){
+  const calls = { status: '/status', files: '/files', real: '/nodes/files', events: '/events', cat: '/catalog' };
   const keys = Object.keys(calls);
   const res = await Promise.allSettled(keys.map(k => j(calls[k])));
   const got = {}, failed = [];
-  res.forEach((r, i) => r.status === 'fulfilled' ? got[keys[i]] = r.value : failed.push(`${calls[keys[i]]} (${r.reason && r.reason.message})`));
+  let responded = false;
+  res.forEach((r, i) => {
+    if(r.status === 'fulfilled'){ got[keys[i]] = r.value; responded = true; }
+    else { responded ||= !!r.reason.httpStatus; failed.push(`${calls[keys[i]]} (${r.reason.message})`); }
+  });
   const badge = $('#conn');
-  if (!got.status) {
-    // Sin /status no hay nada que mostrar: el coordinador realmente no responde
+  state = {
+    status: got.status ? got.status.nodes : state.status.map(n => ({...n, status: 'UNKNOWN'})),
+    files: got.files ? got.files.files : state.files,
+    real: got.real && got.files ? got.real.nodes : {},
+    events: got.events ? got.events.events : state.events,
+    cat: got.cat || null,
+  };
+  if (!responded) {
     badge.className = 'badge b-bad';
     badge.textContent = '● Sin conexión con el coordinador';
-    badge.title = 'Falló: ' + failed.join(', ');
-    return;
-  }
-  state = {
-    status: got.status.nodes,
-    files: got.files ? got.files.files : state.files,
-    real: got.real ? got.real.nodes : state.real,
-    events: got.events ? got.events.events : state.events,
-    cat: got.cat || state.cat,
-  };
-  if (failed.length) {
+    badge.title = failed.join(', ');
+  } else if (failed.length) {
     badge.className = 'badge b-warn';
-    badge.textContent = '● Coordinador en línea (versión incompleta)';
-    badge.title = 'Faltan endpoints: ' + failed.join(', ') + '. Actualiza coordinator/main.py y reinicia el coordinador.';
+    badge.textContent = '● Coordinador en línea · consulta incompleta';
+    badge.title = 'No se pudo actualizar: ' + failed.join(', ');
   } else {
     badge.className = 'badge b-ok'; badge.textContent = '● Coordinador en línea'; badge.title = '';
   }
-  $('#lastcheck').textContent = 'Última consulta: ' + new Date().toLocaleTimeString('es-CO');
+  $('#lastcheck').textContent = (failed.length ? 'Consulta incompleta: ' : 'Última consulta: ') + new Date().toLocaleTimeString('es-CO')
+    + (got.files ? '' : ' · catálogo sin actualizar');
   render();
+  return failed.length === 0;
 }
 
 // Estado de integridad de un archivo: cuántas de sus 2 copias están realmente en disco
 function fileHealth(f){
-  const has = id => { const n = state.real[id]; if(!n || !n.reachable) return null; return n.files.some(x => x.filename === f.filename); };
-  const p = has(f.primary_node), r = has(f.replica_node);
+  let corrupt = false;
+  const has = id => {
+    const n = state.real[id];
+    if(!n || !n.reachable || n.source !== 'disk') return null;
+    if(f.storage_ids?.[id] && f.storage_ids[id] !== n.storage_id) return null;
+    const copy = n.files.find(x => x.storage_key === f.storage_key);
+    if(!copy) return false;
+    const valid = copy.size_bytes === f.size_bytes && copy.sha256 === f.sha256;
+    corrupt ||= !valid; return valid;
+  };
+  const p = has(f.primary_node);
+  let r = has(f.replica_node);
+  if(p === true && r === true && state.real[f.primary_node].storage_id === state.real[f.replica_node].storage_id) r = null;
   const copies = [p, r].filter(v => v === true).length, unknown = [p, r].filter(v => v === null).length;
   let label, cls;
-  if (copies === 2) { label = 'Replicado 2/2'; cls = 'b-ok'; }
-  else if (unknown) { label = copies + '/2 · nodo caído'; cls = 'b-warn'; }
+  if (f.status === 'DELETING') { label = 'Eliminación pendiente'; cls = 'b-warn'; }
+  else if (copies === 2) { label = 'Verificado 2/2'; cls = 'b-ok'; }
+  else if (corrupt) { label = copies + '/2 · copia corrupta'; cls = copies ? 'b-warn' : 'b-bad'; }
+  else if (unknown) { label = copies + '/2 · sin verificar'; cls = 'b-warn'; }
   else if (copies === 1) { label = 'Degradado 1/2'; cls = 'b-warn'; }
-  else { label = 'Perdido 0/2'; cls = 'b-bad'; }
+  else { label = 'Ausente 0/2'; cls = 'b-bad'; }
   return { p, r, copies, label, cls };
 }
 
@@ -212,13 +261,14 @@ function render(){
   $('#s-nodes').textContent = up + ' / ' + state.status.length;
   $('#s-files').textContent = files.length;
   $('#s-bytes').textContent = fmt(files.reduce((a,f) => a + f.size_bytes, 0));
-  $('#s-health').textContent = files.length ? health.filter(h => h.copies === 2).length + ' / ' + files.length : '–';
+  $('#s-health').textContent = files.length ? health.filter((h,i) => h.copies === 2 && files[i].status === 'COMMITTED').length + ' / ' + files.length : '–';
   $('#coord-url').textContent = location.host;
 
   // Nodos
   const now = Date.now();
   $('#nodes').innerHTML = state.status.map(n => {
     const ok = isUp(n);
+    const unknown = n.status === 'UNKNOWN';
     const real = state.real[n.node_id];
     const items = real && real.reachable ? real.files : [];
     const cls = ['node', ok ? '' : 'down', now < highlight.until && highlight.p === n.node_id ? 'hl-p' : '', now < highlight.until && highlight.r === n.node_id ? 'hl-r' : ''].join(' ');
@@ -229,12 +279,13 @@ function render(){
     }).join('');
     return `<div class="${cls}" id="node-${esc(n.node_id)}">
       <div class="node-head"><div><strong>💾 ${esc(n.node_id)}</strong><small>${esc(n.name || '')}</small></div>
-        <span class="badge ${ok ? 'b-ok' : 'b-bad'}">${ok ? 'ACTIVO' : 'CAÍDO'}</span></div>
+        <span class="badge ${ok ? 'b-ok' : unknown ? 'b-mute' : 'b-bad'}">${ok ? 'ACTIVO' : unknown ? 'SIN VERIFICAR' : 'NO RESPONDE'}</span></div>
       <div class="url">${esc(n.url)}</div>
       <div class="times">${ok
-        ? `<span>Conectado desde: <b>${esc(when(n.connected_since))}</b></span><span>Última respuesta: <b>${esc(when(n.last_seen))}</b></span>`
+        ? `<span>Observado activo desde: <b>${esc(when(n.connected_since))}</b></span><span>Última respuesta: <b>${esc(when(n.last_seen))}</b></span>`
         : `<span>Caído desde: <b>${esc(when(n.down_since))}</b></span><span>Última respuesta: <b>${n.last_seen ? esc(when(n.last_seen)) : 'nunca'}</b></span>`}</div>
-      ${ok ? (lis ? `<ul class="filelist">${lis}</ul>` : '<div class="empty">Sin archivos almacenados</div>') : '<div class="empty msg-err">No responde. Sus archivos se sirven desde las réplicas.</div>'}
+      ${real && real.reachable ? (lis ? `<ul class="filelist">${lis}</ul>` : '<div class="empty">Sin archivos almacenados</div>') : '<div class="empty">Inventario no disponible; copias sin verificar.</div>'}
+      ${real && real.checked_at ? `<div class="mono">Inventario consultado: ${esc(when(real.checked_at))}</div>` : ''}
     </div>`;
   }).join('');
 
@@ -249,12 +300,12 @@ function render(){
       <td><span class="badge ${h.cls}">${h.label}</span></td>
       <td>${esc(when(f.created_at))}</td>
       <td class="mono" title="${esc(f.sha256)}">${esc(f.sha256.slice(0, 12))}…</td>
-      <td style="white-space:nowrap"><button data-dl="${esc(f.filename)}">Descargar</button> <button class="danger" data-del="${esc(f.filename)}">Eliminar</button></td></tr>`;
+      <td style="white-space:nowrap"><button data-dl="${esc(f.filename)}" ${f.status === 'DELETING' ? 'disabled' : ''}>Descargar</button> <button class="danger" data-del="${esc(f.filename)}">${f.status === 'DELETING' ? 'Reintentar eliminación' : 'Eliminar'}</button></td></tr>`;
   }).join('') : '<tr><td colspan="8" class="empty">Aún no hay archivos. Sube el primero 👆</td></tr>';
 
   // Turno Round-Robin
   const c = state.cat;
-  $('#rr').innerHTML = c && c.next_primary ? `<span>Próxima subida →</span><span class="chip p" style="padding:2px 10px">${esc(c.next_primary)} · principal</span><span class="chip r" style="padding:2px 10px">${esc(c.next_replica)} · réplica</span><span>(${c.total_files} archivos en catálogo)</span>` : '';
+  $('#rr').innerHTML = c && c.next_primary ? `<span>Próximos candidatos (según disponibilidad) →</span><span class="chip p" style="padding:2px 10px">${esc(c.next_primary)} · principal</span><span class="chip r" style="padding:2px 10px">${esc(c.next_replica)} · réplica</span><span>(${c.total_files} archivos en catálogo)</span>` : '';
 
   // Eventos
   $('#events').innerHTML = state.events.length ? state.events.map(e =>
@@ -301,7 +352,7 @@ async function upload(file){
     box.innerHTML = `<span class="msg-err">✖ ${esc(e.message)}</span>`;
     toast(e.message, 'bad');
   }
-  refresh();
+  refresh(true);
 }
 const drop = $('#drop'), input = $('#file');
 drop.onclick = () => input.click();
@@ -320,24 +371,30 @@ document.addEventListener('click', async e => {
       await j('/files/' + encodeURIComponent(del), { method: 'DELETE' });
       toast(`"${del}" eliminado de los dos nodos`);
     } catch(err){ toast(err.message, 'bad'); }
-    refresh(); return;
+    e.target.disabled = false;
+    refresh(true); return;
   }
   const name = e.target.dataset && e.target.dataset.dl; if(!name) return;
   try {
-    const r = await fetch('/download/' + encodeURIComponent(name));
-    if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText);
+    const {response: r, data: blob} = await api('/download/' + encodeURIComponent(name), {}, r => r.blob());
     const by = r.headers.get('X-Served-By'), fo = r.headers.get('X-Failover') === 'true';
-    const blob = await r.blob(), a = document.createElement('a');
-    a.href = URL.createObjectURL(blob); a.download = name; a.click(); URL.revokeObjectURL(a.href);
-    toast(fo ? `⚠ Failover: el principal no respondió, servido por la réplica ${by}` : `Servido por ${by} (principal)`, fo ? 'warn' : '');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    toast(fo ? `⚠ Copia principal no disponible o inválida; servido por la réplica ${by}` : `Servido por ${by} (principal)`, fo ? 'warn' : '');
   } catch(err){ toast(err.message, 'bad'); }
   refresh();
 });
 
 let tt; function toast(msg, kind=''){ const t = $('#toast'); t.textContent = msg; t.className = 'show ' + kind; clearTimeout(tt); tt = setTimeout(() => t.className = '', 5000); }
 
-$('#btn-status').onclick = async e => { const b = e.currentTarget; b.disabled = true; b.textContent = '⟳ Consultando…'; await refresh(true); b.disabled = false; b.textContent = '⟳ Consultar estado'; toast('Estado de los nodos actualizado'); };
-refresh(); setInterval(refresh, 4000);
+$('#btn-status').onclick = async e => {
+  const b = e.currentTarget; b.disabled = true; b.textContent = '⟳ Consultando…';
+  try { const ok = await refresh(true); toast(ok ? 'Consulta completada' : 'No se pudo completar la consulta', ok ? '' : 'warn'); }
+  finally { b.disabled = false; b.textContent = '⟳ Consultar estado'; }
+};
+async function poll(){ try { await refresh(); } finally { setTimeout(poll, 5000); } }
+poll();
 </script>
 </body>
 </html>

@@ -1,0 +1,12 @@
+Coordinador http://127.0.0.1:1: DOWN
+C:\Users\victo\AppData\Local\Temp\mini-drive-diagnostic-v9mmpcee\scripts\test_connectivity.py:27: RuntimeWarning: coroutine 'check_node_health' was never awaited
+  ready, details = check_node_health(node)
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+Traceback (most recent call last):
+  File "C:\Users\victo\AppData\Local\Temp\mini-drive-diagnostic-v9mmpcee\scripts\test_connectivity.py", line 36, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "C:\Users\victo\AppData\Local\Temp\mini-drive-diagnostic-v9mmpcee\scripts\test_connectivity.py", line 27, in main
+    ready, details = check_node_health(node)
+    ^^^^^^^^^^^^^^
+TypeError: cannot unpack non-iterable coroutine object
