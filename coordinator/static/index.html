@@ -363,18 +363,20 @@ drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); if(e.dat
 
 // Descarga (lee quién sirvió el archivo)
 document.addEventListener('click', async e => {
-  const del = e.target.dataset && e.target.dataset.del;
+  const button = e.target.closest && e.target.closest('button[data-del], button[data-dl]');
+  if (!button) return;
+  const del = button.dataset.del;
   if (del) {
     if (!confirm(`¿Eliminar "${del}" de los dos nodos? Esta acción no se puede deshacer.`)) return;
-    e.target.disabled = true;
+    button.disabled = true;
     try {
       await j('/files/' + encodeURIComponent(del), { method: 'DELETE' });
       toast(`"${del}" eliminado de los dos nodos`);
     } catch(err){ toast(err.message, 'bad'); }
-    e.target.disabled = false;
+    button.disabled = false;
     refresh(true); return;
   }
-  const name = e.target.dataset && e.target.dataset.dl; if(!name) return;
+  const name = button.dataset.dl;
   try {
     const {response: r, data: blob} = await api('/download/' + encodeURIComponent(name), {}, r => r.blob());
     const by = r.headers.get('X-Served-By'), fo = r.headers.get('X-Failover') === 'true';

@@ -83,6 +83,6 @@ La revisión anterior intentaba resolver fallos de un servicio con un alcance ma
 
 ## Verificación del proyecto
 
-La suite vigente contiene **48 pruebas Python** y **10 pruebas del JavaScript de la interfaz**. La prueba HTTP local inicia cuatro procesos en puertos libres y comprueba copias físicas, distribución, recuperación desde réplica, reinicio, inventario y eliminación pendiente con reintento. El equipo también verificó el funcionamiento distribuido del coordinador y los tres nodos sobre Tailscale el 15 de octubre de 2026.
+La suite vigente contiene **50 pruebas Python** y **11 pruebas del JavaScript de la interfaz**. La prueba HTTP local inicia cuatro procesos en puertos libres y comprueba copias físicas, distribución, recuperación desde réplica, reinicio, inventario y que una eliminación se rechace sin borrar copias mientras uno de sus nodos está apagado. Las pruebas unitarias cubren además el estado pendiente y su reintento después de un fallo durante el borrado. También se comprueba que una solicitud de eliminación no borre una copia si no se puede verificar el otro nodo y que la interfaz notifique los fallos de descarga. El equipo verificó el funcionamiento distribuido del coordinador y los tres nodos sobre Tailscale el 15 de octubre de 2026.
 
 Los diagnósticos de versiones anteriores se conservan en `DIAGNOSTICO.md`, `CORRECCIONES.md` y `LIMPIEZA.md` como historial. El contrato vigente se describe en el README y en este documento.

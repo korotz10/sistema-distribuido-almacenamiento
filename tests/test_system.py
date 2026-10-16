@@ -309,20 +309,34 @@ class ClusterTests(unittest.TestCase):
         self.assertFalse((self.root / "node1" / key).exists())
         self.assertFalse((self.root / "node2" / key).exists())
 
+    def test_delete_checks_both_nodes_before_removing_either_copy(self):
+        self.upload()
+        key = self.catalog.get_file("document.txt")["storage_key"]
+        self.down.add("node2")
+
+        response = self.client.delete("/files/document.txt")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("node2", response.json()["detail"])
+        self.assertEqual(self.catalog.get_file("document.txt")["status"], "COMMITTED")
+        self.assertEqual(self.deletions, [])
+        self.assertTrue((self.root / "node1" / key).is_file())
+        self.assertTrue((self.root / "node2" / key).is_file())
+
     def test_partial_delete_survives_restart_and_retries(self):
         self.upload()
-        self.down.add("node2")
+        self.lost_delete_ack.add("node2")
         response = self.client.delete("/files/document.txt")
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["deleted_from"], ["node1"])
         self.assertEqual(self.catalog.get_file("document.txt")["status"], "DELETING")
         self.assertEqual(self.download().status_code, 409)
         self.assertEqual(self.upload().status_code, 409)
-        self.down.clear()
+        self.lost_delete_ack.clear()
         with TestClient(coordinator.create_app(CatalogManager(self.catalog.filepath))) as restarted:
             self.assertEqual(restarted.get("/files").json()["files"]["document.txt"]["status"], "DELETING")
             self.assertEqual(restarted.delete("/files/document.txt").status_code, 200)
-        self.assertEqual(self.deletions, ["node1", "node1", "node2"])
+        self.assertEqual(self.deletions, ["node1", "node2", "node1", "node2"])
 
     def test_delete_does_nothing_if_intent_cannot_be_persisted(self):
         self.upload()

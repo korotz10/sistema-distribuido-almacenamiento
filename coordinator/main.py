@@ -1,6 +1,7 @@
 """Servicio único del laboratorio: subir, listar y descargar con réplica."""
 import asyncio
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 import logging
@@ -194,6 +195,28 @@ def create_app(manager=None):
             if not record:
                 raise HTTPException(404, "Archivo no encontrado en el catálogo")
             nodes = {node["id"]: node for node in services.get_nodes()}
+            node_ids = (record["primary_node"], record["replica_node"])
+
+            def verify_target(node_id):
+                node = nodes.get(node_id)
+                if node is None:
+                    return f"{node_id} (no está configurado)"
+                ready, identity = services.check_node_health(node, app.state.node_sync_client)
+                expected_storage = record.get("storage_ids", {}).get(node_id)
+                if not ready:
+                    return f"{node_id} (no responde)"
+                if expected_storage and identity["storage_id"] != expected_storage:
+                    return f"{node_id} (la identidad de almacenamiento no coincide)"
+                return None
+
+            with ThreadPoolExecutor(max_workers=len(node_ids)) as executor:
+                unavailable = [failure for failure in executor.map(verify_target, node_ids) if failure]
+            if unavailable:
+                message = ("No se inició la eliminación porque no se pudieron verificar ambas copias: "
+                           + ", ".join(unavailable))
+                log_event("error", f"No se eliminó '{filename}': {message}", file=filename)
+                raise HTTPException(503, message)
+
             record = catalog.begin_delete(filename)
             # Reintentar ambas copias es seguro: borrar un objeto ausente también confirma.
             deleted, failed = [], []

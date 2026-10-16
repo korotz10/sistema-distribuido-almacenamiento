@@ -8,17 +8,21 @@ const source = html.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/\npoll\(\)
 function setup() {
   const elements = new Map(), timers = new Map();
   let timerId = 0;
+  let clickHandler;
   const element = selector => {
     if (!elements.has(selector)) elements.set(selector, {textContent: '', innerHTML: '', className: '', title: '',
       getBoundingClientRect: () => ({left: 0, top: 0, width: 100, bottom: 20})});
     return elements.get(selector);
   };
-  const context = vm.createContext({document: {querySelector: element, addEventListener() {}},
-    location: {host: 'test.invalid'}, addEventListener() {}, AbortController, console,
+  const context = vm.createContext({document: {querySelector: element, addEventListener(type, handler) {
+    if (type === 'click') clickHandler = handler;
+  }},
+    location: {host: 'test.invalid'}, addEventListener() {}, confirm: () => true, AbortController, console,
     setTimeout(fn, delay) { timers.set(++timerId, {fn, delay}); return timerId; },
     clearTimeout(id) { timers.delete(id); }});
   vm.runInContext(source, context);
-  return {context, element, timers, run: code => vm.runInContext(code, context)};
+  return {context, element, timers, click: event => clickHandler(event),
+    run: code => vm.runInContext(code, context)};
 }
 const file = {filename: 'audit.txt', storage_key: 'key.txt', size_bytes: 4, sha256: '0'.repeat(64),
   status: 'COMMITTED', created_at: '2026-10-15T00:00:00Z', primary_node: 'node1', replica_node: 'node2'};
@@ -101,6 +105,16 @@ await test('una eliminación pendiente ofrece reintentar y bloquea descargar', (
   assert.match(t.element('#rows').innerHTML, /Reintentar eliminación/);
   assert.match(t.element('#rows').innerHTML, /data-dl="audit.txt" disabled/);
   assert.equal(t.element('#s-health').textContent, '0 / 1');
+});
+await test('fallo de descarga desde un elemento interno del botón muestra aviso', async () => {
+  const t = setup();
+  const button = {dataset: {dl: 'audit.txt'}, disabled: false};
+  t.context.fetch = async url => url.startsWith('/download/')
+    ? {ok: false, status: 503, json: async () => ({detail: 'Ninguna de las dos copias está disponible'})}
+    : response(body(url));
+  await t.click({target: {closest: () => button}});
+  assert.equal(t.element('#toast').textContent, 'Ninguna de las dos copias está disponible');
+  assert.match(t.element('#toast').className, /bad/);
 });
 await test('HTTP tiene plazo y libera el temporizador', async () => {
   const t = setup();

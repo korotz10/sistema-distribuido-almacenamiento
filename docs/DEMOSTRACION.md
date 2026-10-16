@@ -4,7 +4,7 @@ Esta guía organiza la demostración del sistema en los cuatro equipos y el regi
 
 Antes de comenzar, actualicen el coordinador y los tres nodos a la misma versión y reinicien conservando el catálogo y `STORAGE_DIR`. La interfaz está en `/ui/`; `/files` incluye `storage_key` para identificar los objetos físicos. Después de detener un nodo, usen `/status` o **Consultar estado** para solicitar un sondeo nuevo.
 
-El endpoint del coordinador `/files` devuelve el catálogo y las ubicaciones registradas. `/nodes/files` devuelve el inventario físico comunicado por los nodos y el tamaño y SHA-256 de cada objeto. Para observar una eliminación incompleta, utilicen un archivo de prueba, detengan uno de sus nodos asignados e intenten eliminarlo; el catálogo conserva el estado `DELETING` hasta que el borrado se complete.
+El endpoint del coordinador `/files` devuelve el catálogo y las ubicaciones registradas. `/nodes/files` devuelve el inventario físico comunicado por los nodos y el tamaño y SHA-256 de cada objeto. Antes de eliminar, el coordinador comprueba la salud e identidad de ambos nodos asignados. Si uno está detenido, la solicitud responde `503`, no borra la otra copia y conserva el estado `COMMITTED`; al restablecer el nodo se puede reintentar. Si un fallo ocurre después de iniciar el borrado, el catálogo conserva `DELETING` hasta que se complete el reintento.
 
 ## 1. Inventario de infraestructura
 
@@ -153,7 +153,7 @@ Reinicien el coordinador con el mismo catálogo y vuelvan a listar y descargar. 
 
 **¿Qué función cumple el coordinador durante una descarga?** Busca el nombre visible en el catálogo, consulta primero el nodo principal, verifica tamaño y SHA-256 y, si la copia no está disponible o no coincide, intenta la réplica.
 
-**¿Cómo se asignan los nodos durante una subida?** El coordinador recorre los nodos en orden Round-Robin, verifica su salud e identidad y confirma secuencialmente dos copias antes de registrar el archivo.
+**¿Cómo se asignan los nodos durante una subida?** El coordinador recorre los candidatos en orden Round-Robin, verifica su salud e identidad en paralelo y envía concurrentemente las dos primeras copias elegibles. Si una escritura falla, prueba el siguiente nodo; registra el archivo después de confirmar dos copias.
 
 ## 8. Evidencias que deben adjuntarse
 
@@ -165,6 +165,7 @@ Reinicien el coordinador con el mismo catálogo y vuelvan a listar y descargar. 
 | Distribución entre los tres nodos | Registrar las respuestas de subida y `GET /files`. |
 | Descarga con un nodo detenido | Registrar la respuesta y la cabecera `X-Storage-Node`. |
 | Coordinador detenido y reiniciado | Registrar el estado de los nodos y el acceso posterior al catálogo. |
-| Eliminación pendiente y reintento | Registrar las respuestas y el estado del catálogo. |
+| Nodo detenido durante una solicitud de eliminación | Verificar que responde `503`, que no se borra la copia del otro nodo y que el archivo permanece `COMMITTED`; encender el nodo y repetir la eliminación. |
+| Eliminación pendiente y reintento tras un fallo durante el borrado | Registrar las respuestas y el estado `DELETING` del catálogo. |
 
 Las pruebas automatizadas comprueban la lógica del programa con almacenamiento temporal y procesos locales. Esta guía registra las observaciones correspondientes a la ejecución distribuida del equipo.

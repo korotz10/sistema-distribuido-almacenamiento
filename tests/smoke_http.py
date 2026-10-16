@@ -159,15 +159,17 @@ def main():
                     assert item["sha256"] == record["sha256"]
                 stop(primary)
                 deleted = client.delete(base + "/files/" + quote(filename, safe=""))
-                assert deleted.status_code == 503 and deleted.json()["status"] == "DELETING"
-                assert client.get(url).status_code == 409
+                assert deleted.status_code == 503
+                assert "No se inició la eliminación" in deleted.json()["detail"]
+                assert client.get(base + "/files").json()["files"][filename]["status"] == "COMMITTED"
+                assert client.get(url).content == data
                 start(primary, "node.main", ports[primary_index],
                       {"NODE_ID": primary, "STORAGE_DIR": str(root / f"storage{primary_index}")})
                 ready(client, primary, ports[primary_index])
                 assert client.delete(base + "/files/" + quote(filename, safe="")).status_code == 200
                 assert filename not in client.get(base + "/files").json()["files"]
                 connectivity(0)
-                print("HTTP local: copias físicas, Unicode, hash, failover, reinicio, interfaz, inventario y eliminación parcial/reintento OK")
+                print("HTTP local: copias físicas, Unicode, hash, failover, reinicio, interfaz, inventario y verificación previa de eliminación OK")
                 print("La entrega requiere repetir la demostración en cuatro equipos independientes.")
         finally:
             for name in list(processes):
