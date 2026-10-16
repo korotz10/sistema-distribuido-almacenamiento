@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-COORDINATOR_HOST = os.getenv("COORDINATOR_HOST", "0.0.0.0")
+COORDINATOR_HOST = os.getenv("COORDINATOR_HOST", "100.116.61.8")
 COORDINATOR_PORT = int(os.getenv("COORDINATOR_PORT", "8000"))
 CATALOG_FILE = Path(os.getenv("CATALOG_FILE", str(BASE_DIR / "catalog.json")))
 NODE_ID = os.getenv("NODE_ID", "node1")
